@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ProfileDashboard } from '@/components/ProfileDashboard';
+import { ProfileDashboardV3 } from '@/components/ProfileDashboardV3';
 import { getHikerClient, COST_PER_REQUEST_USD } from '@/lib/hikerapi/client';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { calculateEngagement, engagementRating } from '@/lib/analytics/engagement';
 import { analyzePostingPattern } from '@/lib/analytics/posting-patterns';
 import { extractHashtagStats } from '@/lib/analytics/hashtags';
 import { calculateAuthenticityScore } from '@/lib/analytics/authenticity';
+import { evaluateProfile } from '@/lib/evaluation/evaluator';
+import { round } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,21 +19,16 @@ async function runQuickAnalysis(username: string) {
   const user = await hiker.userByUsername(username, { analysisId });
 
   if (user.is_private) {
-    return {
-      username,
-      user,
-      private: true,
-      message: 'Profilo privato: analisi limitata alle info pubbliche',
-    };
+    return { username, user, private: true };
   }
 
   const posts = await hiker.userMediasBulk(user.pk, 12, { analysisId });
   const engagement = calculateEngagement(user, posts);
   const rating = engagementRating(engagement.engagementRate);
   const pattern = analyzePostingPattern(posts);
-  const hashtags = extractHashtagStats(posts).slice(0, 30);
+  const hashtags = extractHashtagStats(posts);
 
-  // Recupera snapshot storici per grafico crescita + authenticity
+  // Snapshot history
   let snapshotHistory: any[] = [];
   try {
     const supabase = getSupabaseAdmin();
@@ -42,14 +39,10 @@ async function runQuickAnalysis(username: string) {
       .order('snapshot_date', { ascending: true })
       .limit(365);
     snapshotHistory = data ?? [];
-  } catch (e) {
-    console.error('[dashboard] history fetch failed:', e);
-  }
+  } catch {}
 
-  // Authenticity score (senza audience quality: quella è nel deep focus)
   const authenticity = calculateAuthenticityScore(user, posts, snapshotHistory);
 
-  // Top posts per engagement
   const topPosts = [...posts]
     .sort(
       (a, b) =>
@@ -58,11 +51,24 @@ async function runQuickAnalysis(username: string) {
     )
     .slice(0, 6);
 
+  // Valutazione AI deterministica
+  const evaluation = evaluateProfile({
+    user,
+    posts,
+    engagementRate: engagement.engagementRate,
+    avgPostsPerWeek: pattern.avgPostsPerWeek,
+    bestDay: pattern.bestDayOfWeek.day,
+    bestHour: pattern.bestHour.hour,
+    hashtagCount: hashtags.length,
+    authenticity,
+    snapshotCount: snapshotHistory.length,
+  });
+
   const logs = hiker.drainLog();
   const totalRequests = logs.length;
-  const totalCost = totalRequests * COST_PER_REQUEST_USD;
+  const totalCost = round(totalRequests * COST_PER_REQUEST_USD, 6);
 
-  // Salva snapshot + log
+  // Persistenza: snapshot + log + cache della ricerca
   try {
     const supabase = getSupabaseAdmin();
 
@@ -89,11 +95,37 @@ async function runQuickAnalysis(username: string) {
     await supabase.from('api_usage').insert({
       profile_username: username,
       analysis_type: 'quick',
-      modules_used: ['profile', 'recent_posts'],
       request_count: totalRequests,
       estimated_cost_usd: totalCost,
       success: true,
     });
+
+    // Cache dell'analisi completa per storico
+    await supabase.from('analyses_cache').upsert(
+      {
+        username: user.username,
+        analyzed_at: new Date().toISOString(),
+        platform: 'instagram',
+        summary: {
+          followers: user.follower_count,
+          engagement_rate: round(engagement.engagementRate, 2),
+          overall_score: evaluation.scoreOverall,
+          authenticity_score: authenticity.overallScore,
+          top_hashtag_count: hashtags.length,
+        },
+        full_data: {
+          user,
+          engagement,
+          pattern,
+          hashtags: hashtags.slice(0, 30),
+          topPosts,
+          authenticity,
+          evaluation,
+        } as any,
+        cost_usd: totalCost,
+      },
+      { onConflict: 'username,platform' }
+    );
   } catch (e) {
     console.error('[dashboard] DB write failed:', e);
   }
@@ -109,6 +141,7 @@ async function runQuickAnalysis(username: string) {
     hashtags,
     snapshotHistory,
     authenticity,
+    evaluation,
     cost: { requests: totalRequests, usd: totalCost },
   };
 }
@@ -148,5 +181,5 @@ export default async function DashboardPage({
 
   if (!data.user) notFound();
 
-  return <ProfileDashboard initialData={data} username={username} />;
+  return <ProfileDashboardV3 initialData={data} username={username} />;
 }
