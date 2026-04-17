@@ -42,6 +42,7 @@ class HikerClient {
 
   /**
    * Esegue una chiamata GET all'API HikerAPI con tracking dei costi.
+   * Gestisce il wrapper { response: ... } che HikerAPI usa su alcuni endpoint.
    */
   private async get<T>(
     endpoint: string,
@@ -57,7 +58,6 @@ class HikerClient {
         'x-access-key': this.accessKey,
         'Accept': 'application/json',
       },
-      // Cache di default a 5 minuti per ridurre chiamate duplicate
       next: { revalidate: 300 },
     });
 
@@ -77,7 +77,13 @@ class HikerClient {
       );
     }
 
-    return res.json() as Promise<T>;
+    const json = await res.json();
+    // HikerAPI a volte wrappa la risposta in { response: ... }, a volte no.
+    // Normalizziamo: se c'è il wrapper, lo togliamo.
+    if (json && typeof json === 'object' && 'response' in json && json.response) {
+      return json.response as T;
+    }
+    return json as T;
   }
 
   /** Restituisce e pulisce il log delle richieste (per report di costo) */
@@ -96,35 +102,29 @@ class HikerClient {
   // USER ENDPOINTS
   // ------------------------------------------------------------------
 
-  /**
-   * Recupera le info di un profilo dall'username.
-   * Costo: 1 request
-   */
   async userByUsername(username: string, opts?: FetchOptions): Promise<HikerUser> {
-    const data = await this.get<{ user: HikerUser }>(
+    const data = await this.get<any>(
       '/v1/user/by/username',
       { username: username.replace('@', '').trim() },
       opts
     );
-    return data.user ?? (data as unknown as HikerUser);
+    // Supporta sia { user: {...} } sia risposta diretta
+    return (data?.user ?? data) as HikerUser;
   }
 
-  /**
-   * Recupera le info di un profilo dal suo ID (pk).
-   * Costo: 1 request
-   */
   async userById(userId: string, opts?: FetchOptions): Promise<HikerUser> {
-    const data = await this.get<{ user: HikerUser }>(
+    const data = await this.get<any>(
       '/v1/user/by/id',
       { id: userId },
       opts
     );
-    return data.user ?? (data as unknown as HikerUser);
+    return (data?.user ?? data) as HikerUser;
   }
 
   /**
    * Recupera i media (post) di un utente, paginati.
-   * Costo: 1 request per pagina (~12 post)
+   * L'endpoint v2 ritorna { items, num_results, more_available, next_max_id }
+   * (wrapped in "response" che viene già rimosso nel metodo get).
    */
   async userMedias(
     userId: string,
@@ -132,15 +132,17 @@ class HikerClient {
     opts?: FetchOptions
   ): Promise<HikerMediasPage> {
     const params: Record<string, string> = { user_id: userId };
-    if (pageId) params.page_id = pageId;
-    const data = await this.get<HikerMediasPage>('/v2/user/medias', params, opts);
-    return data;
+    if (pageId) params.end_cursor = pageId;
+
+    const data = await this.get<any>('/v2/user/medias', params, opts);
+
+    // L'endpoint ritorna: { items: [...], num_results, more_available, next_max_id }
+    return {
+      items: data?.items ?? [],
+      next_page_id: data?.next_max_id ?? null,
+    };
   }
 
-  /**
-   * Recupera N medias di un utente (gestendo paginazione interna).
-   * Costo: ceil(count / 12) requests
-   */
   async userMediasBulk(
     userId: string,
     count: number = 12,
@@ -162,58 +164,42 @@ class HikerClient {
     return out.slice(0, count);
   }
 
-  /**
-   * Recupera le stories attive di un utente.
-   * Costo: 1 request
-   */
   async userStories(userId: string, opts?: FetchOptions): Promise<HikerStory[]> {
-    const data = await this.get<{ reels: Record<string, { items: HikerStory[] }> }>(
+    const data = await this.get<any>(
       '/v1/user/stories',
       { user_id: userId },
       opts
     );
-    const reels = Object.values(data.reels || {});
+    const reels = Object.values(data?.reels || {}) as any[];
     return reels.flatMap((r) => r.items || []);
   }
 
-  /**
-   * Recupera profili "related" (suggeriti) — utili per auto-discovery competitor.
-   * Costo: 1 request
-   */
   async userRelatedProfiles(
     userId: string,
     opts?: FetchOptions
   ): Promise<HikerRelatedProfile[]> {
-    const data = await this.get<{ users: HikerRelatedProfile[] }>(
+    const data = await this.get<any>(
       '/v1/user/related/profiles',
       { user_id: userId },
       opts
     );
-    return data.users || [];
+    return data?.users || [];
   }
 
-  /**
-   * Recupera un sample di follower di un utente.
-   * Costo: 1 request per pagina
-   */
   async userFollowersPage(
     userId: string,
     pageId?: string,
     opts?: FetchOptions
-  ): Promise<{ users: Array<{ pk: string; username: string; is_private: boolean; is_verified: boolean; profile_pic_url: string }>; next_page_id?: string }> {
+  ): Promise<{ users: any[]; next_page_id?: string }> {
     const params: Record<string, string> = { user_id: userId };
-    if (pageId) params.page_id = pageId;
-    return this.get('/v1/user/followers', params, opts);
+    if (pageId) params.end_cursor = pageId;
+    const data = await this.get<any>('/v1/user/followers', params, opts);
+    return {
+      users: data?.users ?? data?.items ?? [],
+      next_page_id: data?.next_max_id ?? data?.end_cursor ?? undefined,
+    };
   }
 
-  // ------------------------------------------------------------------
-  // HASHTAG ENDPOINTS
-  // ------------------------------------------------------------------
-
-  /**
-   * Info su un hashtag (post count, top posts).
-   * Costo: 1 request
-   */
   async hashtagInfo(name: string, opts?: FetchOptions): Promise<HikerHashtag> {
     return this.get<HikerHashtag>(
       '/v1/hashtag/by/name',
@@ -223,7 +209,6 @@ class HikerClient {
   }
 }
 
-// Singleton
 let _client: HikerClient | null = null;
 export function getHikerClient(): HikerClient {
   if (!_client) _client = new HikerClient();
