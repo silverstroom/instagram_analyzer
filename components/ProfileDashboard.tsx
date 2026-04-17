@@ -5,7 +5,12 @@ import { useState } from 'react';
 import { MetricsGrid } from './MetricsGrid';
 import { DeepFocusCard } from './DeepFocusCard';
 import { DeepFocusResults } from './DeepFocusResults';
-import { formatCompact, formatPct } from '@/lib/utils';
+import { FollowerGrowthChart } from './FollowerGrowthChart';
+import { AuthenticityCard } from './AuthenticityCard';
+import { PostingHeatmap } from './PostingHeatmap';
+import { HashtagBubbleMap } from './HashtagBubbleMap';
+import { TopPostsGrid } from './TopPostsGrid';
+import { formatCompact } from '@/lib/utils';
 
 interface Props {
   initialData: any;
@@ -14,7 +19,19 @@ interface Props {
 
 export function ProfileDashboard({ initialData, username }: Props) {
   const [deepData, setDeepData] = useState<any>(null);
-  const { user, engagement, rating, pattern, hashtags, cost, private: isPrivate } = initialData;
+  const {
+    user,
+    engagement,
+    rating,
+    pattern,
+    hashtags,
+    topPosts,
+    posts,
+    snapshotHistory,
+    authenticity,
+    cost,
+    private: isPrivate,
+  } = initialData;
 
   return (
     <main className="min-h-screen">
@@ -57,9 +74,7 @@ export function ProfileDashboard({ initialData, username }: Props) {
                 </svg>
               )}
             </div>
-            {user.full_name && (
-              <p className="text-ink-700 mb-2">{user.full_name}</p>
-            )}
+            {user.full_name && <p className="text-ink-700 mb-2">{user.full_name}</p>}
             {user.biography && (
               <p className="text-sm text-ink-600 whitespace-pre-wrap max-w-xl">
                 {user.biography}
@@ -99,28 +114,36 @@ export function ProfileDashboard({ initialData, username }: Props) {
               bestHour={pattern.bestHour.hour}
             />
 
-            {/* Top hashtag preview */}
-            {hashtags && hashtags.length > 0 && (
+            {/* Authenticity + Growth (2 colonne su desktop) */}
+            <section className="grid md:grid-cols-2 gap-4 mb-10 animate-slide-up">
+              {authenticity && <AuthenticityCard report={authenticity} />}
+              {snapshotHistory && (
+                <FollowerGrowthChart snapshots={snapshotHistory} />
+              )}
+            </section>
+
+            {/* Top Posts */}
+            {topPosts && topPosts.length > 0 && (
               <section className="mb-10 animate-slide-up">
-                <h2 className="font-display text-xl mb-4">Hashtag più performanti</h2>
-                <div className="flex flex-wrap gap-2">
-                  {hashtags.slice(0, 8).map((h: any) => (
-                    <span
-                      key={h.tag}
-                      className="px-3 py-1.5 bg-ink-100 rounded-full text-sm tabular"
-                      title={`${h.usageCount} usi · avg engagement ${formatCompact(h.avgEngagement)}`}
-                    >
-                      {h.tag}
-                      <span className="ml-1.5 text-ink-500 text-xs">
-                        {formatCompact(h.avgEngagement)}
-                      </span>
-                    </span>
-                  ))}
-                </div>
+                <TopPostsGrid posts={topPosts} username={user.username} />
               </section>
             )}
 
-            {/* Deep focus trigger */}
+            {/* Posting Heatmap */}
+            {posts && posts.length > 0 && (
+              <section className="mb-10 animate-slide-up">
+                <PostingHeatmap posts={posts} />
+              </section>
+            )}
+
+            {/* Hashtag Map */}
+            {hashtags && hashtags.length > 0 && (
+              <section className="mb-10 animate-slide-up">
+                <HashtagBubbleMap hashtags={hashtags} />
+              </section>
+            )}
+
+            {/* Deep focus */}
             {!deepData && (
               <DeepFocusCard
                 username={username}
@@ -129,7 +152,6 @@ export function ProfileDashboard({ initialData, username }: Props) {
               />
             )}
 
-            {/* Deep focus results */}
             {deepData && <DeepFocusResults data={deepData} />}
           </>
         )}

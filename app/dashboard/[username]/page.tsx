@@ -6,13 +6,10 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { calculateEngagement, engagementRating } from '@/lib/analytics/engagement';
 import { analyzePostingPattern } from '@/lib/analytics/posting-patterns';
 import { extractHashtagStats } from '@/lib/analytics/hashtags';
+import { calculateAuthenticityScore } from '@/lib/analytics/authenticity';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Quick analysis diretta: niente fetch HTTP interna, si chiamano direttamente
- * le funzioni. Evita problemi di Deployment Protection su Vercel.
- */
 async function runQuickAnalysis(username: string) {
   const hiker = getHikerClient();
   const analysisId = `quick_${username}_${Date.now()}`;
@@ -32,13 +29,40 @@ async function runQuickAnalysis(username: string) {
   const engagement = calculateEngagement(user, posts);
   const rating = engagementRating(engagement.engagementRate);
   const pattern = analyzePostingPattern(posts);
-  const hashtags = extractHashtagStats(posts).slice(0, 10);
+  const hashtags = extractHashtagStats(posts).slice(0, 30);
+
+  // Recupera snapshot storici per grafico crescita + authenticity
+  let snapshotHistory: any[] = [];
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data } = await supabase
+      .from('profile_snapshots')
+      .select('snapshot_date, follower_count, following_count, media_count')
+      .eq('username', user.username)
+      .order('snapshot_date', { ascending: true })
+      .limit(365);
+    snapshotHistory = data ?? [];
+  } catch (e) {
+    console.error('[dashboard] history fetch failed:', e);
+  }
+
+  // Authenticity score (senza audience quality: quella è nel deep focus)
+  const authenticity = calculateAuthenticityScore(user, posts, snapshotHistory);
+
+  // Top posts per engagement
+  const topPosts = [...posts]
+    .sort(
+      (a, b) =>
+        (b.like_count || 0) + (b.comment_count || 0) -
+        ((a.like_count || 0) + (a.comment_count || 0))
+    )
+    .slice(0, 6);
 
   const logs = hiker.drainLog();
   const totalRequests = logs.length;
   const totalCost = totalRequests * COST_PER_REQUEST_USD;
 
-  // Salva snapshot + log costi (non bloccante se fallisce)
+  // Salva snapshot + log
   try {
     const supabase = getSupabaseAdmin();
 
@@ -78,14 +102,14 @@ async function runQuickAnalysis(username: string) {
     username,
     user,
     posts,
+    topPosts,
     engagement,
     rating,
     pattern,
     hashtags,
-    cost: {
-      requests: totalRequests,
-      usd: totalCost,
-    },
+    snapshotHistory,
+    authenticity,
+    cost: { requests: totalRequests, usd: totalCost },
   };
 }
 
