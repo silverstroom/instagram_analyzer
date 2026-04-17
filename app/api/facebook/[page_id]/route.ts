@@ -7,8 +7,9 @@ export const dynamic = 'force-dynamic';
 /**
  * GET /api/facebook/[page_id]?country=IT
  *
- * Restituisce info pagina + ADS attive.
- * Costa 2 request a SearchAPI (~$0.02).
+ * Restituisce:
+ * - info pagina (name, likes, verification, category, creation date)
+ * - ADS attive E inattive (per vedere anche lo storico campagne)
  */
 export async function GET(
   req: Request,
@@ -27,15 +28,31 @@ export async function GET(
   }
 
   try {
+    // Chiediamo "all" per includere anche campagne passate
     const [pageInfo, adsResult] = await Promise.all([
       client.pageInfo(pageId),
-      client.getAdsByPageId(pageId, country, 'active'),
+      client.getAdsByPageId(pageId, country, 'all'),
     ]);
 
     const requestCount = client.drainRequestCount();
     const cost = requestCount * SEARCHAPI_COST_USD;
 
-    // Salva in DB per consultazioni future
+    // Calcolo metriche derivate
+    const activeAds = adsResult.ads.filter((a) => a.is_active);
+    const inactiveAds = adsResult.ads.filter((a) => !a.is_active);
+
+    const videoCount = adsResult.ads.filter((a) => a.display_format === 'VIDEO').length;
+    const imageCount = adsResult.ads.filter((a) => a.display_format === 'IMAGE').length;
+    const carouselCount = adsResult.ads.filter(
+      (a) => a.display_format === 'DCO' || a.display_format === 'CAROUSEL'
+    ).length;
+
+    // Ordina per data: attive in cima (più recenti prima), poi inattive
+    const sortedAds = [
+      ...activeAds.sort((a, b) => (b.start_date || 0) - (a.start_date || 0)),
+      ...inactiveAds.sort((a, b) => (b.end_date || b.start_date || 0) - (a.end_date || a.start_date || 0)),
+    ];
+
     try {
       const supabase = getSupabaseAdmin();
 
@@ -46,7 +63,7 @@ export async function GET(
           page_name: pageInfo.page_name,
           page_info: pageInfo as any,
           ads_count: adsResult.ads.length,
-          ads_data: adsResult.ads as any,
+          ads_data: sortedAds as any,
           cost_usd: cost,
         },
         { onConflict: 'page_id' }
@@ -65,8 +82,15 @@ export async function GET(
 
     return NextResponse.json({
       pageInfo: { ...pageInfo, ...adsResult.page_info },
-      ads: adsResult.ads,
+      ads: sortedAds,
+      activeAdsCount: activeAds.length,
+      inactiveAdsCount: inactiveAds.length,
       totalAdsCount: adsResult.total_count,
+      stats: {
+        videoCount,
+        imageCount,
+        carouselCount,
+      },
       cost: { requests: requestCount, usd: cost },
     });
   } catch (err: any) {

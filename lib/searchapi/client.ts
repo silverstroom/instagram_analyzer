@@ -1,10 +1,10 @@
 /**
- * Client per SearchAPI.io — fornisce accesso alla Meta Ad Library
- * in modo più affidabile e legalmente coperto rispetto allo scraping diretto.
+ * Client SearchAPI.io esteso per v4:
+ * - Supporta inserzioni attive + inattive
+ * - Aggiunge metriche calcolate dalle ADS (longevità, mix creativi)
  *
  * Docs: https://www.searchapi.io/docs/meta-ad-library-api
- *
- * Pricing: pay-per-request, ~$0.01 per query sul piano base.
+ * Pricing: ~$0.01 per request, pay-as-you-go.
  */
 
 export const SEARCHAPI_COST_USD = 0.01;
@@ -13,7 +13,7 @@ export interface AdLibraryAd {
   ad_archive_id: string;
   page_id: string;
   page_name: string;
-  display_format: string; // VIDEO, IMAGE, CAROUSEL
+  display_format: string;
   snapshot?: {
     body?: { text?: string };
     title?: string;
@@ -23,10 +23,10 @@ export interface AdLibraryAd {
   };
   videos?: Array<{ video_hd_url?: string; video_preview_image_url?: string }>;
   images?: Array<{ resized_image_url?: string; original_image_url?: string }>;
-  publisher_platform?: string[]; // ['facebook', 'instagram', ...]
-  start_date?: number; // unix
+  publisher_platform?: string[];
+  start_date?: number;
   end_date?: number | null;
-  total_active_time?: number; // seconds
+  total_active_time?: number;
   is_active?: boolean;
 }
 
@@ -36,9 +36,13 @@ export interface AdLibraryPageInfo {
   page_profile_picture_url?: string;
   page_categories?: string[];
   page_like_count?: number;
+  page_follower_count?: number;
   ig_username?: string;
   page_verification?: string;
   total_ads_running?: number;
+  about_text?: string;
+  creation_date?: string;
+  admin_locations?: string[];
 }
 
 export interface AdLibrarySearchResult {
@@ -73,16 +77,14 @@ class SearchAPIClient {
 
     const res = await fetch(url.toString(), {
       headers: { Accept: 'application/json' },
-      next: { revalidate: 3600 }, // ADS cambiano lentamente, cache 1h
+      next: { revalidate: 3600 },
     });
 
     this.requestCount++;
 
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(
-        `SearchAPI error ${res.status}: ${body.slice(0, 200)}`
-      );
+      throw new Error(`SearchAPI error ${res.status}: ${body.slice(0, 200)}`);
     }
 
     return res.json() as Promise<T>;
@@ -94,14 +96,12 @@ class SearchAPIClient {
     return c;
   }
 
-  /**
-   * Cerca una pagina Facebook per nome/keyword, restituisce candidati con page_id.
-   * Usato come step 1 prima della ricerca ADS.
-   */
   async pageSearch(
     query: string,
     country: string = 'IT'
-  ): Promise<Array<{ page_id: string; name: string; category?: string; image_uri?: string }>> {
+  ): Promise<
+    Array<{ page_id: string; name: string; category?: string; image_uri?: string }>
+  > {
     const data = await this.call<any>({
       engine: 'meta_ad_library_page_search',
       q: query,
@@ -116,9 +116,6 @@ class SearchAPIClient {
     }));
   }
 
-  /**
-   * Restituisce info pubbliche di una pagina Facebook dal suo ID.
-   */
   async pageInfo(pageId: string): Promise<AdLibraryPageInfo> {
     const data = await this.call<any>({
       engine: 'meta_ad_library_page_info',
@@ -127,6 +124,7 @@ class SearchAPIClient {
 
     const info = data.ad_library_page_info || {};
     const page = data.page || {};
+    const transparency = data.pages_transparency_info || {};
 
     return {
       page_id: pageId,
@@ -134,19 +132,26 @@ class SearchAPIClient {
       page_profile_picture_url: info.profile_photo,
       page_categories: info.page_categories || [],
       page_like_count: info.likes,
+      page_follower_count: info.follower_count || info.likes,
       ig_username: info.instagram_username,
       page_verification: info.page_verification,
       total_ads_running: info.active_ads_count,
+      about_text: page.about_text || page.about,
+      creation_date: transparency.creation_date,
+      admin_locations: (transparency.admin_locations || []).map((a: any) => a.country),
     };
   }
 
   /**
-   * Restituisce le ADS attive di una pagina nel paese specificato.
+   * Scarica le ADS di una pagina. `activeStatus`:
+   * - 'active': solo attive (default)
+   * - 'inactive': solo concluse
+   * - 'all': entrambe
    */
   async getAdsByPageId(
     pageId: string,
     country: string = 'IT',
-    activeStatus: 'active' | 'inactive' | 'all' = 'active'
+    activeStatus: 'active' | 'inactive' | 'all' = 'all'
   ): Promise<AdLibrarySearchResult> {
     const data = await this.call<any>({
       engine: 'meta_ad_library',
@@ -162,7 +167,9 @@ class SearchAPIClient {
       page_name: a.page_name || a.current_page_name || '',
       display_format: a.display_format || 'IMAGE',
       snapshot: {
-        body: a.body ? { text: typeof a.body === 'string' ? a.body : a.body.text } : undefined,
+        body: a.body
+          ? { text: typeof a.body === 'string' ? a.body : a.body.text }
+          : undefined,
         title: a.title,
         caption: a.caption,
         cta_text: a.cta_text,
@@ -173,7 +180,7 @@ class SearchAPIClient {
       publisher_platform: a.publisher_platform,
       start_date: a.start_date,
       end_date: a.end_date,
-      is_active: a.is_active ?? true,
+      is_active: a.is_active ?? a.end_date == null,
     }));
 
     return {
@@ -182,12 +189,18 @@ class SearchAPIClient {
       page_info: data.search_information?.ad_library_page_info
         ? {
             page_id: pageId,
-            page_name: data.search_information.ad_library_page_info.page_name,
-            page_profile_picture_url: data.search_information.ad_library_page_info.profile_photo,
-            page_categories: data.search_information.ad_library_page_info.page_categories,
-            page_like_count: data.search_information.ad_library_page_info.likes,
-            ig_username: data.search_information.ad_library_page_info.instagram_username,
-            page_verification: data.search_information.ad_library_page_info.page_verification,
+            page_name:
+              data.search_information.ad_library_page_info.page_name,
+            page_profile_picture_url:
+              data.search_information.ad_library_page_info.profile_photo,
+            page_categories:
+              data.search_information.ad_library_page_info.page_categories,
+            page_like_count:
+              data.search_information.ad_library_page_info.likes,
+            ig_username:
+              data.search_information.ad_library_page_info.instagram_username,
+            page_verification:
+              data.search_information.ad_library_page_info.page_verification,
           }
         : undefined,
     };

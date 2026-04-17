@@ -1,3 +1,10 @@
+/**
+ * Client HikerAPI: esteso v4 con endpoints Facebook.
+ * HikerAPI supporta Facebook tramite endpoint dedicati.
+ *
+ * Vedi https://hiker-doc.readthedocs.io per il dettaglio.
+ */
+
 import type {
   HikerUser,
   HikerMedia,
@@ -7,14 +14,9 @@ import type {
   HikerHashtag,
 } from './types';
 
-/**
- * Costo medio HikerAPI: $0.0006 per request
- * https://hikerapi.com/pricing
- */
 export const COST_PER_REQUEST_USD = 0.0006;
 
 interface FetchOptions {
-  /** ID opzionale per aggregare i costi di una specifica analisi */
   analysisId?: string;
 }
 
@@ -25,6 +27,34 @@ export interface RequestLog {
   estimatedCost: number;
   analysisId?: string;
   timestamp: Date;
+}
+
+export interface FacebookPageData {
+  page_id: string;
+  name: string;
+  username?: string;
+  category?: string;
+  likes?: number;
+  followers?: number;
+  about?: string;
+  profile_picture_url?: string;
+  cover_photo_url?: string;
+  is_verified?: boolean;
+  website?: string;
+  created_at?: string;
+}
+
+export interface FacebookPost {
+  id: string;
+  post_url?: string;
+  message?: string; // il "caption" di FB
+  created_time?: number;
+  type?: 'photo' | 'video' | 'link' | 'status' | 'album';
+  reactions_count?: number;
+  comments_count?: number;
+  shares_count?: number;
+  thumbnail_url?: string;
+  full_picture?: string;
 }
 
 class HikerClient {
@@ -40,10 +70,6 @@ class HikerClient {
     }
   }
 
-  /**
-   * Esegue una chiamata GET all'API HikerAPI con tracking dei costi.
-   * Gestisce il wrapper { response: ... } che HikerAPI usa su alcuni endpoint.
-   */
   private async get<T>(
     endpoint: string,
     params: Record<string, string> = {},
@@ -56,7 +82,7 @@ class HikerClient {
       method: 'GET',
       headers: {
         'x-access-key': this.accessKey,
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
       next: { revalidate: 300 },
     });
@@ -78,29 +104,29 @@ class HikerClient {
     }
 
     const json = await res.json();
-    // HikerAPI a volte wrappa la risposta in { response: ... }, a volte no.
-    // Normalizziamo: se c'è il wrapper, lo togliamo.
-    if (json && typeof json === 'object' && 'response' in json && json.response) {
+    // Unwrap "response" wrapper se presente
+    if (
+      json &&
+      typeof json === 'object' &&
+      'response' in json &&
+      json.response
+    ) {
       return json.response as T;
     }
     return json as T;
   }
 
-  /** Restituisce e pulisce il log delle richieste (per report di costo) */
   drainLog(): RequestLog[] {
     const log = this.requestLog;
     this.requestLog = [];
     return log;
   }
 
-  /** Somma costo stimato delle richieste registrate */
   totalCost(): number {
     return this.requestLog.reduce((sum, r) => sum + r.estimatedCost, 0);
   }
 
-  // ------------------------------------------------------------------
-  // USER ENDPOINTS
-  // ------------------------------------------------------------------
+  // ---- INSTAGRAM (unchanged) ----
 
   async userByUsername(username: string, opts?: FetchOptions): Promise<HikerUser> {
     const data = await this.get<any>(
@@ -108,24 +134,14 @@ class HikerClient {
       { username: username.replace('@', '').trim() },
       opts
     );
-    // Supporta sia { user: {...} } sia risposta diretta
     return (data?.user ?? data) as HikerUser;
   }
 
   async userById(userId: string, opts?: FetchOptions): Promise<HikerUser> {
-    const data = await this.get<any>(
-      '/v1/user/by/id',
-      { id: userId },
-      opts
-    );
+    const data = await this.get<any>('/v1/user/by/id', { id: userId }, opts);
     return (data?.user ?? data) as HikerUser;
   }
 
-  /**
-   * Recupera i media (post) di un utente, paginati.
-   * L'endpoint v2 ritorna { items, num_results, more_available, next_max_id }
-   * (wrapped in "response" che viene già rimosso nel metodo get).
-   */
   async userMedias(
     userId: string,
     pageId?: string,
@@ -133,10 +149,7 @@ class HikerClient {
   ): Promise<HikerMediasPage> {
     const params: Record<string, string> = { user_id: userId };
     if (pageId) params.end_cursor = pageId;
-
     const data = await this.get<any>('/v2/user/medias', params, opts);
-
-    // L'endpoint ritorna: { items: [...], num_results, more_available, next_max_id }
     return {
       items: data?.items ?? [],
       next_page_id: data?.next_max_id ?? null,
@@ -165,11 +178,7 @@ class HikerClient {
   }
 
   async userStories(userId: string, opts?: FetchOptions): Promise<HikerStory[]> {
-    const data = await this.get<any>(
-      '/v1/user/stories',
-      { user_id: userId },
-      opts
-    );
+    const data = await this.get<any>('/v1/user/stories', { user_id: userId }, opts);
     const reels = Object.values(data?.reels || {}) as any[];
     return reels.flatMap((r) => r.items || []);
   }
@@ -206,6 +215,95 @@ class HikerClient {
       { name: name.replace('#', '').trim() },
       opts
     );
+  }
+
+  // ---- FACEBOOK (NUOVO) ----
+  // Nota: HikerAPI ha endpoint facebook con path /v1/fb/*
+  // Le query response sono wrapped in { response: ... } come Instagram
+
+  /**
+   * Cerca una pagina Facebook per nome/URL/username.
+   */
+  async fbPageSearch(
+    query: string,
+    opts?: FetchOptions
+  ): Promise<Array<{ page_id: string; name: string; category?: string }>> {
+    try {
+      const data = await this.get<any>(
+        '/v1/fb/page/search',
+        { query },
+        opts
+      );
+      return (data?.pages || data?.results || []).map((p: any) => ({
+        page_id: String(p.id || p.page_id),
+        name: p.name,
+        category: p.category,
+      }));
+    } catch (e) {
+      console.warn('[fb] search failed, returning empty:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Info pagina Facebook dato il page_id.
+   */
+  async fbPageInfo(pageId: string, opts?: FetchOptions): Promise<FacebookPageData> {
+    const data = await this.get<any>(
+      '/v1/fb/page/by/id',
+      { id: pageId },
+      opts
+    );
+    const p = data?.page ?? data;
+    return {
+      page_id: String(p.id || p.page_id || pageId),
+      name: p.name || '',
+      username: p.username || p.link_name,
+      category: p.category,
+      likes: p.fan_count || p.likes,
+      followers: p.followers_count || p.fan_count,
+      about: p.about || p.description,
+      profile_picture_url: p.profile_picture?.url || p.profile_pic_url,
+      cover_photo_url: p.cover?.source,
+      is_verified: p.is_verified || p.verified,
+      website: p.website,
+      created_at: p.founded || p.founded_date,
+    };
+  }
+
+  /**
+   * Post recenti di una pagina FB.
+   */
+  async fbPagePosts(
+    pageId: string,
+    limit: number = 12,
+    opts?: FetchOptions
+  ): Promise<FacebookPost[]> {
+    try {
+      const data = await this.get<any>(
+        '/v1/fb/page/posts',
+        { page_id: pageId, limit: String(limit) },
+        opts
+      );
+      const items = data?.posts || data?.items || [];
+      return items.map((p: any) => ({
+        id: String(p.id || p.post_id),
+        post_url: p.permalink_url || p.link,
+        message: p.message || p.story,
+        created_time: p.created_time
+          ? new Date(p.created_time).getTime() / 1000
+          : undefined,
+        type: p.type || (p.attachments?.[0]?.type ?? 'status'),
+        reactions_count: p.reactions?.summary?.total_count || p.likes_count,
+        comments_count: p.comments?.summary?.total_count || p.comments_count,
+        shares_count: p.shares?.count || p.shares_count,
+        thumbnail_url: p.full_picture || p.picture,
+        full_picture: p.full_picture,
+      }));
+    } catch (e) {
+      console.warn('[fb] posts failed:', e);
+      return [];
+    }
   }
 }
 

@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ProfileDashboardV3 } from '@/components/ProfileDashboardV3';
+import { ProfileDashboardV4 } from '@/components/ProfileDashboardV4';
 import { getHikerClient, COST_PER_REQUEST_USD } from '@/lib/hikerapi/client';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
 import { calculateEngagement, engagementRating } from '@/lib/analytics/engagement';
 import { analyzePostingPattern } from '@/lib/analytics/posting-patterns';
-import { extractHashtagStats } from '@/lib/analytics/hashtags';
+import {
+  extractHashtagStats,
+  debugCaptionStructure,
+} from '@/lib/analytics/hashtags';
 import { calculateAuthenticityScore } from '@/lib/analytics/authenticity';
 import { evaluateProfile } from '@/lib/evaluation/evaluator';
 import { round } from '@/lib/utils';
@@ -23,12 +26,15 @@ async function runQuickAnalysis(username: string) {
   }
 
   const posts = await hiker.userMediasBulk(user.pk, 12, { analysisId });
+
+  // DEBUG: logga struttura del primo post per capire dove è la caption
+  debugCaptionStructure(posts);
+
   const engagement = calculateEngagement(user, posts);
   const rating = engagementRating(engagement.engagementRate);
   const pattern = analyzePostingPattern(posts);
   const hashtags = extractHashtagStats(posts);
 
-  // Snapshot history
   let snapshotHistory: any[] = [];
   try {
     const supabase = getSupabaseAdmin();
@@ -46,12 +52,12 @@ async function runQuickAnalysis(username: string) {
   const topPosts = [...posts]
     .sort(
       (a, b) =>
-        (b.like_count || 0) + (b.comment_count || 0) -
+        (b.like_count || 0) +
+        (b.comment_count || 0) -
         ((a.like_count || 0) + (a.comment_count || 0))
     )
     .slice(0, 6);
 
-  // Valutazione AI deterministica
   const evaluation = evaluateProfile({
     user,
     posts,
@@ -61,14 +67,14 @@ async function runQuickAnalysis(username: string) {
     bestHour: pattern.bestHour.hour,
     hashtagCount: hashtags.length,
     authenticity,
-    snapshotCount: snapshotHistory.length,
+    snapshotHistory,
   });
 
   const logs = hiker.drainLog();
   const totalRequests = logs.length;
   const totalCost = round(totalRequests * COST_PER_REQUEST_USD, 6);
 
-  // Persistenza: snapshot + log + cache della ricerca
+  // Persistenza
   try {
     const supabase = getSupabaseAdmin();
 
@@ -100,7 +106,6 @@ async function runQuickAnalysis(username: string) {
       success: true,
     });
 
-    // Cache dell'analisi completa per storico
     await supabase.from('analyses_cache').upsert(
       {
         username: user.username,
@@ -117,7 +122,7 @@ async function runQuickAnalysis(username: string) {
           user,
           engagement,
           pattern,
-          hashtags: hashtags.slice(0, 30),
+          hashtags: hashtags.slice(0, 50),
           topPosts,
           authenticity,
           evaluation,
@@ -181,5 +186,5 @@ export default async function DashboardPage({
 
   if (!data.user) notFound();
 
-  return <ProfileDashboardV3 initialData={data} username={username} />;
+  return <ProfileDashboardV4 initialData={data} username={username} />;
 }

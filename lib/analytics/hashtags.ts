@@ -5,17 +5,51 @@ export interface HashtagStat {
   usageCount: number;
   avgEngagement: number;
   totalEngagement: number;
-  posts: string[]; // shortcodes dei post
+  posts: string[];
 }
 
 /**
- * Estrae hashtag dalle caption dei post e li ordina per performance.
+ * Estrae il testo della caption in modo robusto.
+ * HikerAPI a volte usa caption_text (stringa), altre volte caption (oggetto con .text).
+ * Questa funzione li gestisce entrambi + fallback a altri campi comuni.
+ */
+export function extractCaptionText(post: any): string {
+  if (!post) return '';
+
+  // Campi possibili in ordine di probabilità
+  const candidates = [
+    post.caption_text,
+    typeof post.caption === 'string' ? post.caption : null,
+    post.caption?.text,
+    post.text,
+    post.accessibility_caption,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.length > 0) return c;
+  }
+  return '';
+}
+
+/**
+ * Estrae hashtag da una stringa, normalizzati lowercase.
+ * Unicode-aware: funziona con caratteri accentati, emoji esclusi.
+ */
+export function extractHashtagsFromText(text: string): string[] {
+  if (!text) return [];
+  const matches = text.match(/#[\p{L}0-9_]+/gu) || [];
+  return Array.from(new Set(matches.map((m) => m.toLowerCase())));
+}
+
+/**
+ * Calcola statistiche hashtag dai post.
  */
 export function extractHashtagStats(posts: HikerMedia[]): HashtagStat[] {
   const stats = new Map<string, HashtagStat>();
 
   for (const post of posts) {
-    const tags = extractHashtags(post.caption_text || '');
+    const caption = extractCaptionText(post);
+    const tags = extractHashtagsFromText(caption);
     const engagement = (post.like_count || 0) + (post.comment_count || 0);
 
     for (const tag of tags) {
@@ -28,18 +62,33 @@ export function extractHashtagStats(posts: HikerMedia[]): HashtagStat[] {
       };
       existing.usageCount += 1;
       existing.totalEngagement += engagement;
-      existing.posts.push(post.code);
+      if (post.code) existing.posts.push(post.code);
       stats.set(tag, existing);
     }
   }
 
-  // Calcola media e ordina
   return Array.from(stats.values())
-    .map((s) => ({ ...s, avgEngagement: s.totalEngagement / s.usageCount }))
-    .sort((a, b) => b.avgEngagement - a.avgEngagement);
+    .map((s) => ({
+      ...s,
+      avgEngagement: s.usageCount > 0 ? s.totalEngagement / s.usageCount : 0,
+    }))
+    .sort((a, b) => b.usageCount - a.usageCount); // primario: frequenza d'uso
 }
 
-function extractHashtags(text: string): string[] {
-  const matches = text.match(/#[\p{L}0-9_]+/gu) || [];
-  return Array.from(new Set(matches.map((m) => m.toLowerCase())));
+/**
+ * Debug helper: loggal primi 3 post per verificare struttura dati
+ */
+export function debugCaptionStructure(posts: any[]): void {
+  if (!posts || posts.length === 0) return;
+  const sample = posts.slice(0, 3).map((p) => ({
+    code: p.code,
+    has_caption_text: typeof p.caption_text === 'string',
+    caption_text_preview: typeof p.caption_text === 'string' ? p.caption_text.slice(0, 100) : null,
+    has_caption_obj: typeof p.caption === 'object' && p.caption !== null,
+    caption_obj_text_preview:
+      typeof p.caption === 'object' && p.caption?.text ? p.caption.text.slice(0, 100) : null,
+    has_caption_string: typeof p.caption === 'string',
+    caption_string_preview: typeof p.caption === 'string' ? p.caption.slice(0, 100) : null,
+  }));
+  console.log('[hashtag-debug]', JSON.stringify(sample, null, 2));
 }
