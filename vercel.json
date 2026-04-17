@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/snapshot",
+      "schedule": "0 6 * * *"
+    }
+  ],
+  "functions": {
+    "app/api/deep-focus/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/cron/snapshot/route.ts": {
+      "maxDuration": 300
+    }
+  }
+}
