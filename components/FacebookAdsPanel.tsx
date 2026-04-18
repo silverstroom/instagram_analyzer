@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { NormalizedProfile } from '@/lib/scrapecreators/normalizer';
 import type { NormalizedAd } from '@/lib/scrapecreators/normalizer';
-import { formatDate, formatCompact, proxiedImage } from '@/lib/utils';
+import { formatDate, proxiedImage } from '@/lib/utils';
 
 interface Props {
   profile: NormalizedProfile;
@@ -12,13 +12,9 @@ interface Props {
 type FilterType = 'all' | 'active' | 'inactive';
 
 /**
- * Pannello ADS Meta Ad Library con struttura uguale allo screenshot Facebook:
- * - Badge "Attiva" / "Non attiva" in alto con cerchio colorato
- * - ID libreria
- * - Periodo date
- * - Piattaforme con icone
- * - Testo creativo
- * - Thumbnail grande
+ * Pannello ADS Meta Ad Library.
+ * IMPORTANTE: il pageId per Ad Library è DIVERSO da quello del profilo FB.
+ * Lo ScrapeCreators lo espone in `adLibrary.pageId` del payload profilo.
  */
 export function FacebookAdsPanel({ profile }: Props) {
   const [state, setState] = useState<
@@ -26,6 +22,7 @@ export function FacebookAdsPanel({ profile }: Props) {
     | { stage: 'loading' }
     | { stage: 'loaded'; ads: NormalizedAd[]; activeCount: number; inactiveCount: number }
     | { stage: 'error'; message: string }
+    | { stage: 'no_ads' }
   >({ stage: 'idle' });
 
   const [filter, setFilter] = useState<FilterType>('all');
@@ -33,13 +30,19 @@ export function FacebookAdsPanel({ profile }: Props) {
   useEffect(() => {
     if (state.stage !== 'idle') return;
 
+    // FIX v5.1: usa fbAdLibraryPageId (da adLibrary.pageId) invece di profile.id
+    const adLibraryPageId = profile.fbAdLibraryPageId;
+
+    if (!adLibraryPageId) {
+      setState({ stage: 'no_ads' });
+      return;
+    }
+
     async function load() {
       setState({ stage: 'loading' });
       try {
-        // Per FB usiamo il pageId dal profilo se disponibile, altrimenti l'handle
-        const pageIdentifier = profile.id || profile.handle;
         const res = await fetch(
-          `/api/facebook/ads?pageId=${encodeURIComponent(pageIdentifier)}&country=IT`
+          `/api/facebook/ads?pageId=${encodeURIComponent(adLibraryPageId!)}&country=IT`
         );
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -60,6 +63,18 @@ export function FacebookAdsPanel({ profile }: Props) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  if (state.stage === 'no_ads') {
+    return (
+      <section className="rounded-2xl border border-ink-100 bg-ink-50 p-8 text-center">
+        <h3 className="font-semibold text-ink-900 mb-1 text-lg">Nessuna inserzione rilevata</h3>
+        <p className="text-base text-ink-700">
+          Questa pagina non risulta aver mai usato Meta Ads, oppure la Ad Library non la
+          mostra per questo paese.
+        </p>
+      </section>
+    );
+  }
 
   if (state.stage === 'loading') {
     return (
@@ -148,7 +163,6 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
   const startStr = ad.startDate ? formatDate(ad.startDate) : '—';
   const endStr = ad.endDate ? formatDate(ad.endDate) : null;
 
-  // Mappa nome piattaforma → icona inline SVG
   const platformIcons: Record<string, React.ReactNode> = {
     facebook: (
       <svg viewBox="0 0 24 24" fill="#1877F2" className="w-4 h-4">
@@ -174,14 +188,13 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
     ),
     threads: (
       <svg viewBox="0 0 24 24" fill="#000" className="w-4 h-4">
-        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z" />
+        <circle cx="12" cy="12" r="10" />
       </svg>
     ),
   };
 
   return (
     <article className="rounded-lg border border-ink-200 bg-white overflow-hidden flex flex-col shadow-sm">
-      {/* Header con status */}
       <header className="px-4 pt-3 pb-2 border-b border-ink-100">
         <div className="flex items-start justify-between gap-2 mb-2">
           <StatusBadge active={ad.isActive} />
@@ -212,7 +225,6 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
         </div>
       </header>
 
-      {/* Testo creativo */}
       <div className="px-4 py-3 flex-1">
         <div className="flex items-center gap-2 mb-2 pb-2 border-b border-ink-100">
           {profile.profilePicUrl && (
@@ -240,7 +252,6 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
         )}
       </div>
 
-      {/* Thumbnail / preview */}
       {thumb ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -256,7 +267,6 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
         </div>
       )}
 
-      {/* CTA footer */}
       {(ad.ctaText || ad.linkUrl) && (
         <footer className="px-4 py-3 border-t border-ink-100 flex items-center justify-between gap-2 bg-ink-50/50">
           {ad.linkUrl ? (
@@ -266,7 +276,10 @@ function AdCard({ ad, profile }: { ad: NormalizedAd; profile: NormalizedProfile 
               rel="noopener noreferrer"
               className="text-xs text-ink-700 truncate hover:text-ink-900"
             >
-              {new URL(ad.linkUrl).hostname.replace('www.', '')}
+              {(() => {
+                try { return new URL(ad.linkUrl).hostname.replace('www.', ''); }
+                catch { return ad.linkUrl; }
+              })()}
             </a>
           ) : (
             <span />

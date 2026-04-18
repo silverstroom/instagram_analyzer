@@ -1,10 +1,7 @@
 /**
- * Normalizer — trasforma le risposte (spesso disomogenee) di ScrapeCreators
- * in modelli uniformi consumati da tutto il frontend.
- *
- * Tutti i parametri raw sono tipati `any` perché i payload ScrapeCreators
- * hanno 50+ campi dinamici che cambiano tra social e versioni API.
- * La tipizzazione forte va sul modello NORMALIZED (output), non sull'input.
+ * Normalizer — trasforma le risposte di ScrapeCreators in modelli uniformi.
+ * Payload `raw` sono tipati any perché le strutture variano tra social.
+ * La tipizzazione forte è sui NormalizedProfile/Post/Ad (output).
  */
 
 // ============================================================
@@ -19,6 +16,7 @@ export interface NormalizedProfile {
   biography: string;
   profilePicUrl?: string;
   profilePicUrlHd?: string;
+  coverPhotoUrl?: string;
   externalUrl?: string;
   category?: string;
   isVerified: boolean;
@@ -29,6 +27,9 @@ export interface NormalizedProfile {
   mediaCount: number;
   bioLinks: Array<{ title: string; url: string }>;
   hasHighlights?: boolean;
+  fbAdLibraryPageId?: string;
+  fbEmail?: string;
+  fbPhone?: string;
   raw: any;
 }
 
@@ -127,64 +128,122 @@ export function normalizeInstagramPosts(raw: any): NormalizedPost[] {
 }
 
 // ============================================================
-// FACEBOOK
+// FACEBOOK — fix per struttura ScrapeCreators reale
 // ============================================================
 
 export function normalizeFacebookProfile(raw: any): NormalizedProfile {
-  const p: any = raw?.data || raw?.profile || raw || {};
+  const p: any = raw || {};
+
+  const fullName = p.name || p.pageName || '';
+  const profileId = String(p.id || p.pageId || '');
+
+  let handle = '';
+  if (p.url) {
+    const m = p.url.match(/facebook\.com\/([^/?#]+)/);
+    if (m) handle = m[1];
+  }
+  if (!handle) handle = fullName.toLowerCase().replace(/\s+/g, '');
+
+  const coverPhoto =
+    p.coverPhoto?.photo?.image?.uri ||
+    p.coverPhoto?.viewer_image?.uri ||
+    p.cover?.source;
+
+  const profilePicUrl = p.profilePicLarge || p.profilePicMedium || p.profilePicSmall;
+  const profilePicUrlHd = p.profilePicLarge || p.profilePicMedium;
+
+  const followerCount = p.followerCount || p.followers || 0;
+  const likeCount = p.likeCount || p.likes || 0;
+
+  const biography = p.pageIntro || p.about || p.description || p.bio || '';
+  const category = p.category || (Array.isArray(p.categories) ? p.categories.join(', ') : p.categories);
+
+  const isBusiness = !!p.adLibrary?.pageId || !!p.isBusinessPageActive || true;
+  const isVerified = !!(p.isVerified || p.is_verified || p.verified);
+
+  const bioLinks: Array<{ title: string; url: string }> = [];
+  if (p.website) bioLinks.push({ title: p.website, url: p.website });
+  if (Array.isArray(p.links)) {
+    for (const l of p.links) {
+      if (typeof l === 'string') bioLinks.push({ title: l, url: l });
+      else if (l?.url) bioLinks.push({ title: l.title || l.url, url: l.url });
+    }
+  }
 
   return {
     platform: 'facebook',
-    id: String(p.pageId || p.page_id || p.id || p.url || ''),
-    handle: p.username || p.vanity || p.pageId || '',
-    fullName: p.name || p.pageName || '',
-    biography: p.about || p.description || p.bio || '',
-    profilePicUrl: p.profilePicture || p.profile_picture || p.profilePictureUrl || p.profile_pic_url,
-    profilePicUrlHd: p.profilePicture || p.profile_picture,
+    id: profileId,
+    handle,
+    fullName,
+    biography,
+    profilePicUrl,
+    profilePicUrlHd,
+    coverPhotoUrl: coverPhoto,
     externalUrl: p.website || p.url_website,
-    category: p.category || (Array.isArray(p.categories) ? p.categories.join(', ') : p.categories),
-    isVerified: !!(p.isVerified || p.is_verified),
-    isBusiness: true,
+    category,
+    isVerified,
+    isBusiness,
     isPrivate: false,
-    followerCount: p.followers || p.followerCount || p.follower_count || 0,
-    followingCount: p.following || p.followingCount || 0,
+    followerCount: followerCount || likeCount,
+    followingCount: 0,
     mediaCount: p.postCount || p.post_count || 0,
-    bioLinks: p.website ? [{ title: p.website, url: p.website }] : [],
+    bioLinks,
+    fbAdLibraryPageId: p.adLibrary?.pageId,
+    fbEmail: p.email,
+    fbPhone: p.phone,
     raw,
   };
 }
 
 export function normalizeFacebookPosts(raw: any): NormalizedPost[] {
-  const arr: any[] = Array.isArray(raw) ? raw : [];
+  let arr: any[] = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (Array.isArray(raw?.posts)) arr = raw.posts;
+  else if (Array.isArray(raw?.data?.posts)) arr = raw.data.posts;
+  else if (Array.isArray(raw?.results)) arr = raw.results;
+
   return arr.map((p: any) => {
-    const text = p.text || p.message || p.content || '';
+    const text = p.text || p.message || p.content || p.story || '';
     const thumb =
       p.thumbnail ||
       p.image ||
+      p.full_picture ||
       (Array.isArray(p.images) ? p.images[0] : undefined) ||
-      p.thumbnailUrl;
+      p.thumbnailUrl ||
+      p.photo_url;
 
     let type: NormalizedPost['type'] = 'status';
-    if (p.video || p.videoUrl) type = 'video';
-    else if (p.images?.length > 1) type = 'carousel';
+    if (p.video || p.videoUrl || p.video_url) type = 'video';
+    else if (p.images?.length > 1 || p.attachments?.length > 1) type = 'carousel';
     else if (thumb) type = 'photo';
-    else if (p.link) type = 'link';
+    else if (p.link || p.url_link) type = 'link';
 
     let takenAt = 0;
-    if (p.created_time) takenAt = new Date(p.created_time).getTime() / 1000;
-    else if (p.publishedDate) takenAt = new Date(p.publishedDate).getTime() / 1000;
-    else if (p.date) takenAt = new Date(p.date).getTime() / 1000;
-    else if (p.timestamp) takenAt = typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime() / 1000;
+    const timeField = p.created_time || p.publishedDate || p.date || p.timestamp || p.creation_time;
+    if (timeField) {
+      if (typeof timeField === 'number') {
+        takenAt = timeField > 1e12 ? timeField / 1000 : timeField;
+      } else {
+        const d = new Date(timeField);
+        if (!isNaN(d.getTime())) takenAt = d.getTime() / 1000;
+      }
+    }
 
     return {
       id: String(p.id || p.postId || p.post_id || p.url || ''),
-      url: p.url || p.postUrl,
+      url: p.url || p.postUrl || p.permalink_url,
       type,
       caption: text,
       thumbnailUrl: thumb,
-      mediaUrl: p.video || p.videoUrl || thumb,
+      mediaUrl: p.video || p.videoUrl || p.video_url || thumb,
       takenAt,
-      likeCount: p.reactionsCount || p.reactions?.total || p.likesCount || p.likes_count || 0,
+      likeCount:
+        p.reactionsCount ||
+        p.reactions?.total ||
+        p.likesCount ||
+        p.likes_count ||
+        p.likes ||
+        0,
       commentCount: p.commentsCount || p.comments_count || p.comments || 0,
       shareCount: p.sharesCount || p.shares_count || p.shares || 0,
     };
@@ -217,9 +276,7 @@ export function normalizeFacebookAd(raw: any): NormalizedAd {
 
   const parseDate = (v: any): Date | undefined => {
     if (!v) return undefined;
-    if (typeof v === 'number') {
-      return new Date(v > 1e12 ? v : v * 1000);
-    }
+    if (typeof v === 'number') return new Date(v > 1e12 ? v : v * 1000);
     if (typeof v === 'string') {
       const d = new Date(v);
       return isNaN(d.getTime()) ? undefined : d;
