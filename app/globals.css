@@ -5,45 +5,28 @@
 :root {
   --background: #fafaf9;
   --foreground: #1c1c19;
-  --muted: #737369;
-  --border: rgba(0, 0, 0, 0.08);
-  --accent: #db6b2a;
-  --success: #1d9e75;
-  --danger: #cc5420;
-  --warning: #ba7517;
+
+  /* INK scale riequilibrata per contrast ratio.
+     Il problema precedente era ink-400/500 su bg ink-50 → AA fail.
+     Ora ink-600+ garantisce ≥ 4.5:1 contrast ratio su sfondi chiari. */
+
   --surface: #ffffff;
   --surface-muted: #f4f4f2;
 
-  /* Typography scale - ridimensionata per migliore leggibilità */
-  --text-xs: 12px;     /* era 10-11 */
-  --text-sm: 14px;     /* era 12-13 */
-  --text-base: 16px;   /* era 14 */
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
   --text-md: 17px;
-  --text-lg: 20px;     /* era 18 */
+  --text-lg: 20px;
   --text-xl: 24px;
   --text-2xl: 28px;
   --text-3xl: 32px;
   --text-4xl: 40px;
-  --text-hero: 56px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a09;
-    --foreground: #fafaf9;
-    --muted: #a3a39b;
-    --border: rgba(255, 255, 255, 0.1);
-    --surface: #1c1c19;
-    --surface-muted: #27272422;
-  }
-}
+* { box-sizing: border-box; }
 
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
+html, body {
   padding: 0;
   margin: 0;
   background: var(--background);
@@ -66,18 +49,11 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Testo leggibile su mobile */
 @media (max-width: 640px) {
-  html {
-    font-size: 15px;
-  }
+  html { font-size: 15px; }
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
   border-radius: 5px;
@@ -87,12 +63,11 @@ body {
 }
 
 *:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid #db6b2a;
   outline-offset: 2px;
   border-radius: 2px;
 }
 
-/* Keyframes animazioni */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
@@ -104,13 +79,22 @@ body {
   animation: shimmer 1.6s ease-in-out infinite;
 }
 
-@keyframes pulse-ring {
-  0% { box-shadow: 0 0 0 0 rgba(24, 119, 242, 0.4); }
-  70% { box-shadow: 0 0 0 8px rgba(24, 119, 242, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(24, 119, 242, 0); }
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out;
 }
 
-/* line-clamp fallback */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up {
+  animation: slide-up 0.5s ease-out;
+}
+
 .line-clamp-2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -120,6 +104,12 @@ body {
 .line-clamp-3 {
   display: -webkit-box;
   -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-4 {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

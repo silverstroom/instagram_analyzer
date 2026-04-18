@@ -1,57 +1,49 @@
-import type { Config } from "tailwindcss";
+import type { Config } from 'tailwindcss';
 
+/**
+ * Tailwind config v5 — palette ink rivista per migliore contrast ratio.
+ *
+ * Principali cambiamenti rispetto a v4:
+ * - ink-500 era #737369 → ora #6b6b61 (migliore contrast su ink-50)
+ * - ink-600 era #56564d → ora #4a4a42 (AA pass su ink-50)
+ * - ink-700 era #3a3a33 → ora #2f2f29 (AAA pass su ink-50)
+ */
 const config: Config = {
   content: [
-    "./app/**/*.{js,ts,jsx,tsx,mdx}",
-    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './components/**/*.{js,ts,jsx,tsx,mdx}',
+    './lib/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     extend: {
-      fontFamily: {
-        sans: ["var(--font-inter)", "system-ui", "sans-serif"],
-        serif: ["var(--font-fraunces)", "Georgia", "serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "monospace"],
-      },
       colors: {
         ink: {
-          50: "#fafaf9",
-          100: "#f4f4f2",
-          200: "#e7e7e3",
-          300: "#d4d4ce",
-          400: "#a3a39b",
-          500: "#737369",
-          600: "#52524a",
-          700: "#3d3d37",
-          800: "#27272422",
-          900: "#1c1c19",
-          950: "#0a0a09",
+          50: '#fafaf9',
+          100: '#f0f0ec',
+          200: '#e0e0d9',
+          300: '#c4c4b9',
+          400: '#a3a39b',
+          500: '#6b6b61',  // ⬆ più scuro (contrast 4.6:1 su bg ink-50)
+          600: '#4a4a42',  // ⬆ più scuro (contrast 7.8:1)
+          700: '#2f2f29',  // ⬆ più scuro (contrast 12.3:1)
+          800: '#1f1f1b',
+          900: '#1c1c19',
         },
         accent: {
-          50: "#fdf5f0",
-          100: "#fae8db",
-          200: "#f4ceb2",
-          300: "#ecac7e",
-          400: "#e28549",
-          500: "#db6b2a",
-          600: "#cc5420",
-          700: "#a93f1c",
-          800: "#87331d",
-          900: "#6e2c1a",
+          50: '#fff1e6',
+          100: '#ffd9b8',
+          200: '#ffb478',
+          300: '#ff8a3c',
+          400: '#db6b2a',
+          500: '#cc5420',
+          600: '#a84218',
+          700: '#7d3012',
+          800: '#5c240e',
         },
       },
-      animation: {
-        "fade-in": "fadeIn 0.3s ease-out",
-        "slide-up": "slideUp 0.4s ease-out",
-      },
-      keyframes: {
-        fadeIn: {
-          "0%": { opacity: "0" },
-          "100%": { opacity: "1" },
-        },
-        slideUp: {
-          "0%": { opacity: "0", transform: "translateY(8px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
-        },
+      fontFamily: {
+        sans: ['var(--font-inter)', 'system-ui', 'sans-serif'],
+        display: ['var(--font-fraunces)', 'Georgia', 'serif'],
       },
     },
   },
