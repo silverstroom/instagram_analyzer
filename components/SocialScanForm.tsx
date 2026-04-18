@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Platform } from '@/lib/scrapecreators/client';
 
 interface SocialMeta {
@@ -90,11 +90,6 @@ const SOCIALS: SocialMeta[] = [
   },
 ];
 
-/**
- * Form home con UN input per ogni social selezionato.
- * Gli handle tra social sono diversi (es. edunews_24 su IG, EduNews24.it su FB),
- * quindi servono campi separati.
- */
 export function SocialScanForm() {
   const router = useRouter();
   const [selected, setSelected] = useState<Record<Platform, boolean>>(() => {
@@ -111,10 +106,50 @@ export function SocialScanForm() {
     twitter: '',
   });
   const [submitting, setSubmitting] = useState(false);
+  const [cacheHits, setCacheHits] = useState<Record<Platform, boolean>>({
+    instagram: false,
+    facebook: false,
+    tiktok: false,
+    youtube: false,
+    linkedin: false,
+    twitter: false,
+  });
 
   const activeSocials = SOCIALS.filter((s) => selected[s.id]);
   const filledActive = activeSocials.filter((s) => inputs[s.id].trim().length > 0);
   const primary = filledActive[0];
+
+  // Ricarica cache hit dopo digitazione (debounced)
+  useEffect(() => {
+    const timeout = setTimeout(async () => {
+      const newHits: Record<Platform, boolean> = {
+        instagram: false,
+        facebook: false,
+        tiktok: false,
+        youtube: false,
+        linkedin: false,
+        twitter: false,
+      };
+      for (const s of activeSocials) {
+        const val = inputs[s.id].trim();
+        if (!val) continue;
+        const handle = cleanHandle(val, s.id);
+        if (!handle) continue;
+        try {
+          const res = await fetch(
+            `/api/cache-check?platform=${s.id}&username=${encodeURIComponent(handle)}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            newHits[s.id] = !!data.inCache;
+          }
+        } catch {}
+      }
+      setCacheHits(newHits);
+    }, 500);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(inputs), JSON.stringify(selected)]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -122,8 +157,6 @@ export function SocialScanForm() {
     setSubmitting(true);
 
     const platforms = filledActive.map((s) => s.id).join(',');
-
-    // Passa gli handle di tutti i social selezionati via query string
     const handlesParam = filledActive
       .map((s) => `${s.id}:${encodeURIComponent(inputs[s.id].trim())}`)
       .join(',');
@@ -166,28 +199,40 @@ export function SocialScanForm() {
         </div>
       </div>
 
-      {/* Input dedicato per ogni social selezionato */}
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="space-y-2">
           {activeSocials.map((s) => (
-            <div
-              key={s.id}
-              className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white focus-within:border-ink-900 transition-colors"
-            >
-              <div
-                className="shrink-0 w-11 h-11 rounded-l-lg flex items-center justify-center border-r border-ink-200"
-                style={{ color: s.color }}
-              >
-                {s.icon}
+            <div key={s.id} className="space-y-1">
+              <div className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white focus-within:border-ink-900 transition-colors">
+                <div
+                  className="shrink-0 w-11 h-11 rounded-l-lg flex items-center justify-center border-r border-ink-200"
+                  style={{ color: s.color }}
+                >
+                  {s.icon}
+                </div>
+                <input
+                  type="text"
+                  value={inputs[s.id]}
+                  onChange={(e) => setInputs({ ...inputs, [s.id]: e.target.value })}
+                  placeholder={s.hint}
+                  className="flex-1 py-2.5 pr-3 text-sm md:text-base bg-transparent outline-none text-ink-900 placeholder:text-ink-500 min-w-0"
+                  disabled={submitting}
+                />
+                {cacheHits[s.id] && (
+                  <span className="shrink-0 mr-3 text-xs text-green-700 bg-green-50 border border-green-200 px-2 py-1 rounded-full inline-flex items-center gap-1">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3">
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M12 6v6l4 2" strokeLinecap="round" />
+                    </svg>
+                    in storico
+                  </span>
+                )}
               </div>
-              <input
-                type="text"
-                value={inputs[s.id]}
-                onChange={(e) => setInputs({ ...inputs, [s.id]: e.target.value })}
-                placeholder={s.hint}
-                className="flex-1 py-2.5 pr-3 text-sm md:text-base bg-transparent outline-none text-ink-900 placeholder:text-ink-500 min-w-0"
-                disabled={submitting}
-              />
+              {cacheHits[s.id] && (
+                <p className="text-xs text-green-700 pl-2">
+                  Già analizzato. Premi Scansiona per aprire dalla cache senza nuovo scan.
+                </p>
+              )}
             </div>
           ))}
           {activeSocials.length === 0 && (
@@ -202,13 +247,15 @@ export function SocialScanForm() {
           disabled={!primary || submitting}
           className="w-full px-6 py-3.5 bg-ink-900 text-white rounded-full text-base md:text-lg font-medium hover:bg-ink-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {submitting ? 'Analisi in corso...' : `Scansiona ${filledActive.length > 0 ? filledActive.length : ''} social`}
+          {submitting ? 'Attendi...' : `Scansiona ${filledActive.length > 0 ? filledActive.length : ''} social`}
         </button>
 
         {filledActive.length > 0 && (
           <p className="text-xs text-ink-600 text-center">
-            Partiremo da <strong>{primary?.name}</strong>. Gli altri social con dati compilati
-            diventeranno tab nella dashboard.
+            Partiremo da <strong>{primary?.name}</strong>.{' '}
+            {Object.values(cacheHits).some((v) => v) && (
+              <>I social con <strong>in storico</strong> sono già in cache (nessun nuovo scan).</>
+            )}
           </p>
         )}
       </form>
@@ -216,27 +263,15 @@ export function SocialScanForm() {
   );
 }
 
-/**
- * Ripulisce l'input dell'utente per generare un identificatore usabile nella URL.
- * Per IG/TikTok/Twitter/YouTube: elimina @ e spazi.
- * Per Facebook: se è URL completo lascia come è (URL-encoded), se è handle pulito
- * lo usa direttamente.
- * Per LinkedIn: accetta URL company.
- */
 function cleanHandle(raw: string, platform: Platform): string {
   const trimmed = raw.trim();
 
   if (platform === 'facebook' || platform === 'linkedin') {
-    // Se è URL completo, estraggo l'ultimo segmento per URL-friendliness
     try {
       const u = new URL(trimmed);
       const parts = u.pathname.split('/').filter(Boolean);
-      // Per FB l'handle è il primo segmento dopo il dominio
-      // Per LinkedIn può essere company/X o in/X, prendiamo l'ultimo segmento utile
-      const handle = parts[parts.length - 1] || parts[0] || '';
-      return handle;
+      return parts[parts.length - 1] || parts[0] || '';
     } catch {
-      // Non è URL valido, usa come è
       return trimmed.replace(/^@/, '');
     }
   }

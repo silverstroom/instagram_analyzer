@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
 import type { NormalizedProfile, NormalizedPost } from '@/lib/scrapecreators/normalizer';
 import type { OptimizationChecklist } from '@/lib/evaluation/checklist';
 import type { Platform } from '@/lib/scrapecreators/client';
@@ -22,8 +23,10 @@ interface Props {
   initialChecklist: OptimizationChecklist;
   platform: string;
   selectedPlatforms: string[];
-  handles: Record<string, string>; // NUOVO: map platform → handle specifico
+  handles: Record<string, string>;
   username: string;
+  analyzedAt: string;
+  fromCache: boolean;
 }
 
 export function ProfileDashboardV5({
@@ -34,7 +37,11 @@ export function ProfileDashboardV5({
   selectedPlatforms,
   handles,
   username,
+  analyzedAt,
+  fromCache,
 }: Props) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const [activeTab, setActiveTab] = useState<Platform>(platform as Platform);
   const [perPlatformData, setPerPlatformData] = useState<
     Record<string, { profile: NormalizedProfile; posts: NormalizedPost[]; checklist: OptimizationChecklist } | null>
@@ -58,21 +65,27 @@ export function ProfileDashboardV5({
     setLoadingTab(tab);
     setTabErrors((prev) => ({ ...prev, [tab]: '' }));
     try {
-      // Usa l'handle specifico per quel social, altrimenti fallback
       const tabHandle = handles[tab] || username;
       const res = await fetch(
         `/api/analyze?platform=${tab}&username=${encodeURIComponent(tabHandle)}`
       );
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Errore ${res.status}`);
-      }
+      if (!res.ok) throw new Error(data.error || `Errore ${res.status}`);
       setPerPlatformData((prev) => ({ ...prev, [tab]: data }));
     } catch (e: any) {
       setTabErrors((prev) => ({ ...prev, [tab]: e.message }));
     } finally {
       setLoadingTab(null);
     }
+  }
+
+  function handleRefresh() {
+    const current = new URL(window.location.href);
+    current.searchParams.set('refresh', '1');
+    startTransition(() => {
+      router.push(current.pathname + current.search);
+      router.refresh();
+    });
   }
 
   const hashtagStats = currentData ? aggregateHashtags(currentData.posts) : [];
@@ -94,6 +107,50 @@ export function ProfileDashboardV5({
             Storico
           </Link>
         </nav>
+
+        {/* Banner cache + pulsante aggiorna */}
+        <div className="mb-5 p-3 rounded-lg border border-ink-200 bg-ink-50 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 text-sm text-ink-700 flex-wrap">
+            {fromCache ? (
+              <>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-4 h-4 shrink-0">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 6v6l4 2" strokeLinecap="round" />
+                </svg>
+                <span>
+                  <strong>Dati da storico</strong> · ultima analisi {formatRelativeTime(analyzedAt)}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-green-700 inline-flex items-center gap-1">
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M9 12l2 2 4-4" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <strong>Analisi appena completata</strong>
+                </span>
+                <span className="text-ink-600">· salvata in storico</span>
+              </>
+            )}
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={isPending}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-ink-300 text-sm font-medium text-ink-800 hover:bg-ink-100 transition-colors disabled:opacity-50"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className={`w-4 h-4 ${isPending ? 'animate-spin' : ''}`}
+            >
+              <path d="M4 4v6h6M20 20v-6h-6M20 4a9 9 0 00-15.5 3M4 20a9 9 0 0015.5-3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            {isPending ? 'Aggiornamento...' : 'Aggiorna analisi'}
+          </button>
+        </div>
 
         <MultiPlatformTabs
           platforms={selectedPlatforms as Platform[]}
@@ -118,10 +175,8 @@ export function ProfileDashboardV5({
             <div className="font-semibold mb-2">Errore caricando {activeTab}</div>
             <div className="text-sm mb-3">{currentError}</div>
             <div className="text-xs text-red-800">
-              Suggerimento: torna in <Link href="/" className="underline">home</Link> e
-              inserisci l&apos;handle/URL corretto per {activeTab}. Gli handle tra social sono
-              spesso diversi (es. <code>@edunews_24</code> su Instagram ma{' '}
-              <code>facebook.com/EduNews24.it</code> su Facebook).
+              Torna in <Link href="/" className="underline">home</Link> e inserisci
+              l&apos;handle/URL corretto per {activeTab}.
             </div>
           </div>
         )}
@@ -145,14 +200,27 @@ export function ProfileDashboardV5({
               <PostingHeatmap posts={currentData.posts} />
             )}
             <TagCloud hashtags={hashtagStats} />
-            {activeTab === 'facebook' && (
-              <FacebookAdsPanel profile={currentData.profile} />
-            )}
+            {activeTab === 'facebook' && <FacebookAdsPanel profile={currentData.profile} />}
           </div>
         )}
       </div>
     </main>
   );
+}
+
+function formatRelativeTime(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHr = Math.floor(diffMs / 3600000);
+  const diffDay = Math.floor(diffMs / 86400000);
+
+  if (diffMin < 1) return 'poco fa';
+  if (diffMin < 60) return `${diffMin} min fa`;
+  if (diffHr < 24) return `${diffHr} ${diffHr === 1 ? 'ora' : 'ore'} fa`;
+  if (diffDay < 30) return `${diffDay} ${diffDay === 1 ? 'giorno' : 'giorni'} fa`;
+  return date.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 interface HashtagStat {

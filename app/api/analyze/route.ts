@@ -13,23 +13,55 @@ import {
   type NormalizedPost,
 } from '@/lib/scrapecreators/normalizer';
 import { evaluateProfileChecklist } from '@/lib/evaluation/checklist';
+import { getSupabaseAdmin } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 /**
- * GET /api/analyze?platform=...&username=...
+ * GET /api/analyze?platform=...&username=...&refresh=1
  *
- * Endpoint condiviso usato dalla dashboard per caricare una platform al volo
- * quando l'utente switcha tab (senza ricaricare la pagina).
+ * Usato dal tab switch. Cache-first: se c'è un'analisi esistente, la restituisce
+ * dalla cache. Con refresh=1 forza il refresh.
  */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const platform = searchParams.get('platform') || '';
-  const username = searchParams.get('username')?.replace('@', '').trim().toLowerCase() || '';
+  const rawUsername = searchParams.get('username') || '';
+  const username = rawUsername.replace('@', '').trim().toLowerCase();
+  const forceRefresh = searchParams.get('refresh') === '1';
 
   if (!platform || !username) {
     return NextResponse.json({ error: 'platform e username richiesti' }, { status: 400 });
+  }
+
+  // CACHE LOOKUP
+  if (!forceRefresh) {
+    try {
+      const supabase = getSupabaseAdmin();
+      const { data } = await supabase
+        .from('analyses_cache')
+        .select('full_data, analyzed_at')
+        .eq('platform', platform)
+        .in('username', [username, rawUsername, rawUsername.toLowerCase()])
+        .order('analyzed_at', { ascending: false })
+        .limit(1);
+
+      if (data && data.length > 0 && data[0].full_data) {
+        const fd = data[0].full_data as any;
+        if (fd.profile && fd.checklist) {
+          return NextResponse.json({
+            profile: fd.profile,
+            posts: fd.posts || [],
+            checklist: fd.checklist,
+            fromCache: true,
+            analyzedAt: data[0].analyzed_at,
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[analyze] cache lookup failed:', e);
+    }
   }
 
   const client = getScrapeCreatorsClient();
@@ -49,7 +81,7 @@ export async function GET(req: Request) {
         break;
       }
       case 'facebook': {
-        const url = username.startsWith('http') ? username : `https://www.facebook.com/${username}`;
+        const url = rawUsername.startsWith('http') ? rawUsername : `https://www.facebook.com/${rawUsername}`;
         const [profileRaw, postsRaw] = await Promise.all([
           client.facebookProfile(url),
           client.facebookPosts(url).catch(() => []),
@@ -94,7 +126,7 @@ export async function GET(req: Request) {
         break;
       }
       case 'linkedin': {
-        const url = username.startsWith('http') ? username : `https://www.linkedin.com/company/${username}`;
+        const url = rawUsername.startsWith('http') ? rawUsername : `https://www.linkedin.com/company/${rawUsername}`;
         const raw = await client.linkedinCompany(url).catch(() => client.linkedinProfile(url));
         profile = normalizeLinkedInProfile(raw);
         break;
@@ -125,7 +157,33 @@ export async function GET(req: Request) {
 
     const checklist = evaluateProfileChecklist(profile, posts);
 
-    return NextResponse.json({ profile, posts, checklist });
+    // Salva in cache
+    try {
+      const supabase = getSupabaseAdmin();
+      await supabase.from('analyses_cache').upsert(
+        {
+          username: (profile.handle || username).toLowerCase(),
+          platform,
+          analyzed_at: new Date().toISOString(),
+          profile_pic_url: profile.profilePicUrl,
+          summary: {
+            followers: profile.followerCount,
+            following: profile.followingCount,
+            posts: profile.mediaCount,
+            is_verified: profile.isVerified,
+            checklist_score: checklist.score,
+            posts_analyzed: posts.length,
+          },
+          full_data: { profile, posts, checklist } as any,
+          cost_usd: 0,
+        },
+        { onConflict: 'username,platform' }
+      );
+    } catch (e) {
+      console.error('[analyze] cache write failed:', e);
+    }
+
+    return NextResponse.json({ profile, posts, checklist, fromCache: false });
   } catch (err: any) {
     console.error('[analyze]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });

@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
 import { ProfileDashboardV5 } from '@/components/ProfileDashboardV5';
 import { getScrapeCreatorsClient } from '@/lib/scrapecreators/client';
 import {
@@ -15,12 +14,51 @@ import {
   type NormalizedPost,
 } from '@/lib/scrapecreators/normalizer';
 import { getSupabaseAdmin } from '@/lib/supabase/admin';
-import { evaluateProfileChecklist } from '@/lib/evaluation/checklist';
+import { evaluateProfileChecklist, type OptimizationChecklist } from '@/lib/evaluation/checklist';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 type Params = { platform: string; username: string };
+
+/**
+ * Cerca nel DB un'analisi esistente. La chiave è (handle lowercase, platform).
+ * Prova anche le varianti con/senza '@' e come-inserito dall'utente.
+ */
+async function lookupCache(
+  platform: string,
+  candidates: string[]
+): Promise<{ profile: NormalizedProfile; posts: NormalizedPost[]; checklist: OptimizationChecklist; analyzedAt: string } | null> {
+  try {
+    const supabase = getSupabaseAdmin();
+    const lowerCandidates = Array.from(
+      new Set(candidates.flatMap((c) => [c, c.toLowerCase(), c.replace(/^@/, '').toLowerCase()]))
+    ).filter(Boolean);
+
+    const { data } = await supabase
+      .from('analyses_cache')
+      .select('username, platform, analyzed_at, full_data')
+      .eq('platform', platform)
+      .in('username', lowerCandidates)
+      .order('analyzed_at', { ascending: false })
+      .limit(1);
+
+    if (data && data.length > 0 && data[0].full_data) {
+      const fd = data[0].full_data as any;
+      if (fd.profile && fd.checklist) {
+        return {
+          profile: fd.profile,
+          posts: fd.posts || [],
+          checklist: fd.checklist,
+          analyzedAt: data[0].analyzed_at,
+        };
+      }
+    }
+  } catch (e) {
+    console.error('[dashboard] cache lookup failed:', e);
+  }
+  return null;
+}
 
 async function analyzeProfile(
   platform: string,
@@ -40,9 +78,7 @@ async function analyzeProfile(
           posts: normalizeInstagramPosts(raw),
         };
       }
-
       case 'facebook': {
-        // Accetta sia handle puro ('EduNews24.it') sia URL completa
         const url = input.startsWith('http')
           ? input
           : `https://www.facebook.com/${input}`;
@@ -55,7 +91,6 @@ async function analyzeProfile(
           posts: normalizeFacebookPosts(postsRaw),
         };
       }
-
       case 'tiktok': {
         const raw = await client.tiktokProfile(input);
         const videos = await client.tiktokProfileVideos(input).catch(() => null);
@@ -74,7 +109,6 @@ async function analyzeProfile(
         }));
         return { profile, posts };
       }
-
       case 'youtube': {
         const raw = await client.youtubeChannel(input);
         const videos = await client.youtubeChannelVideos(input).catch(() => null);
@@ -92,15 +126,11 @@ async function analyzeProfile(
         }));
         return { profile, posts };
       }
-
       case 'linkedin': {
-        const url = input.startsWith('http')
-          ? input
-          : `https://www.linkedin.com/company/${input}`;
+        const url = input.startsWith('http') ? input : `https://www.linkedin.com/company/${input}`;
         const raw = await client.linkedinCompany(url).catch(() => client.linkedinProfile(url));
         return { profile: normalizeLinkedInProfile(raw), posts: [] };
       }
-
       case 'twitter': {
         const raw = await client.twitterProfile(input);
         const tweets = await client.twitterUserTweets(input).catch(() => null);
@@ -117,7 +147,6 @@ async function analyzeProfile(
         }));
         return { profile, posts };
       }
-
       default:
         return { profile: null, posts: [], error: `Platform "${platform}" non supportata` };
     }
@@ -126,10 +155,6 @@ async function analyzeProfile(
   }
 }
 
-/**
- * Parse il parametro handles dalla query.
- * Formato: "instagram:edunews_24,facebook:EduNews24.it,tiktok:@foo"
- */
 function parseHandlesParam(raw: string | undefined): Record<string, string> {
   if (!raw) return {};
   const out: Record<string, string> = {};
@@ -149,71 +174,89 @@ export default async function DashboardPage({
   searchParams,
 }: {
   params: Params;
-  searchParams: { platforms?: string; handles?: string };
+  searchParams: { platforms?: string; handles?: string; refresh?: string };
 }) {
   const platform = params.platform.toLowerCase();
   const urlUsername = decodeURIComponent(params.username);
   const selectedPlatforms = (searchParams.platforms || platform).split(',').filter(Boolean);
   const handles = parseHandlesParam(searchParams.handles);
+  const forceRefresh = searchParams.refresh === '1';
 
-  // Usa l'handle specifico per la platform se disponibile, altrimenti fallback all'URL param
   const analysisInput = handles[platform] || urlUsername;
 
-  const { profile, posts, error } = await analyzeProfile(platform, analysisInput);
-
-  if (error || !profile) {
-    return (
-      <main className="min-h-screen">
-        <div className="max-w-3xl mx-auto px-6 py-20">
-          <Link
-            href="/"
-            className="text-sm text-ink-700 hover:text-ink-900 mb-6 inline-block"
-          >
-            ← Torna alla home
-          </Link>
-          <h1 className="font-display text-3xl mb-4">Analisi non riuscita</h1>
-          <p className="text-ink-700 mb-4">
-            Non è stato possibile analizzare <strong>{analysisInput}</strong> su {platform}.
-          </p>
-          <pre className="mt-4 p-4 bg-ink-100 rounded-md text-sm text-red-800 overflow-auto whitespace-pre-wrap">
-            {error}
-          </pre>
-          <p className="text-sm text-ink-700 mt-4">
-            Suggerimento: verifica di aver inserito l&apos;handle/URL corretto per{' '}
-            {platform}. Gli handle variano tra social (es. <code>@edunews_24</code> su
-            Instagram ma <code>facebook.com/EduNews24.it</code> su Facebook).
-          </p>
-        </div>
-      </main>
-    );
+  // CACHE-FIRST: se non è richiesto refresh, cerca nel DB
+  let cached: Awaited<ReturnType<typeof lookupCache>> | null = null;
+  if (!forceRefresh) {
+    cached = await lookupCache(platform, [urlUsername, analysisInput]);
   }
 
-  const checklist = evaluateProfileChecklist(profile, posts);
+  let profile: NormalizedProfile;
+  let posts: NormalizedPost[];
+  let checklist: OptimizationChecklist;
+  let analyzedAt: string;
+  let fromCache = false;
 
-  // Persistenza storico
-  try {
-    const supabase = getSupabaseAdmin();
-    await supabase.from('analyses_cache').upsert(
-      {
-        username: profile.handle || analysisInput,
-        platform,
-        analyzed_at: new Date().toISOString(),
-        profile_pic_url: profile.profilePicUrl,
-        summary: {
-          followers: profile.followerCount,
-          following: profile.followingCount,
-          posts: profile.mediaCount,
-          is_verified: profile.isVerified,
-          checklist_score: checklist.score,
-          posts_analyzed: posts.length,
+  if (cached) {
+    profile = cached.profile;
+    posts = cached.posts;
+    checklist = cached.checklist;
+    analyzedAt = cached.analyzedAt;
+    fromCache = true;
+  } else {
+    const result = await analyzeProfile(platform, analysisInput);
+    if (result.error || !result.profile) {
+      return (
+        <main className="min-h-screen">
+          <div className="max-w-3xl mx-auto px-6 py-20">
+            <Link href="/" className="text-sm text-ink-700 hover:text-ink-900 mb-6 inline-block">
+              ← Torna alla home
+            </Link>
+            <h1 className="font-display text-3xl mb-4">Analisi non riuscita</h1>
+            <p className="text-ink-700 mb-4">
+              Non è stato possibile analizzare <strong>{analysisInput}</strong> su {platform}.
+            </p>
+            <pre className="mt-4 p-4 bg-ink-100 rounded-md text-sm text-red-800 overflow-auto whitespace-pre-wrap">
+              {result.error}
+            </pre>
+            <p className="text-sm text-ink-700 mt-4">
+              Suggerimento: verifica di aver inserito l&apos;handle/URL corretto per {platform}.
+              Gli handle variano tra social (es. <code>@edunews_24</code> su Instagram ma{' '}
+              <code>facebook.com/EduNews24.it</code> su Facebook).
+            </p>
+          </div>
+        </main>
+      );
+    }
+    profile = result.profile;
+    posts = result.posts;
+    checklist = evaluateProfileChecklist(profile, posts);
+    analyzedAt = new Date().toISOString();
+
+    // Scrivi in cache
+    try {
+      const supabase = getSupabaseAdmin();
+      await supabase.from('analyses_cache').upsert(
+        {
+          username: (profile.handle || analysisInput).toLowerCase(),
+          platform,
+          analyzed_at: analyzedAt,
+          profile_pic_url: profile.profilePicUrl,
+          summary: {
+            followers: profile.followerCount,
+            following: profile.followingCount,
+            posts: profile.mediaCount,
+            is_verified: profile.isVerified,
+            checklist_score: checklist.score,
+            posts_analyzed: posts.length,
+          },
+          full_data: { profile, posts, checklist } as any,
+          cost_usd: 0,
         },
-        full_data: { profile, posts, checklist } as any,
-        cost_usd: 0,
-      },
-      { onConflict: 'username,platform' }
-    );
-  } catch (e) {
-    console.error('[dashboard] DB write failed:', e);
+        { onConflict: 'username,platform' }
+      );
+    } catch (e) {
+      console.error('[dashboard] DB write failed:', e);
+    }
   }
 
   return (
@@ -225,6 +268,8 @@ export default async function DashboardPage({
       selectedPlatforms={selectedPlatforms}
       handles={handles}
       username={profile.handle || analysisInput}
+      analyzedAt={analyzedAt}
+      fromCache={fromCache}
     />
   );
 }
