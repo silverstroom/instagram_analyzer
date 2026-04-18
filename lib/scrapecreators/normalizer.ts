@@ -74,9 +74,7 @@ export function normalizeInstagramProfile(raw: SCInstagramProfile): NormalizedPr
   const user = raw.user || (raw as any);
   const edges = user.edge_owner_to_timeline_media?.edges || [];
 
-  return {
-    platform: 'instagram',
-    id: String(user.pk || user.pk_id || user.id || user.username),
+  const user: any = raw.user || (raw as any);
     handle: user.username,
     fullName: user.full_name || '',
     biography: user.biography || user.biography_with_entities?.raw_text || '',
