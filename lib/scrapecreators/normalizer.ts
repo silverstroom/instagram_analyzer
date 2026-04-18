@@ -1,9 +1,11 @@
 /**
  * Normalizer — trasforma le risposte (spesso disomogenee) di ScrapeCreators
  * in modelli uniformi consumati da tutto il frontend.
+ *
+ * Tutti i parametri raw sono tipati `any` perché i payload ScrapeCreators
+ * hanno 50+ campi dinamici che cambiano tra social e versioni API.
+ * La tipizzazione forte va sul modello NORMALIZED (output), non sull'input.
  */
-
-import type { SCInstagramProfile, SCFacebookProfile, SCFacebookPost, SCFacebookAd } from './client';
 
 // ============================================================
 // NORMALIZED MODELS
@@ -27,7 +29,7 @@ export interface NormalizedProfile {
   mediaCount: number;
   bioLinks: Array<{ title: string; url: string }>;
   hasHighlights?: boolean;
-  raw: any; // payload originale per debugging
+  raw: any;
 }
 
 export interface NormalizedPost {
@@ -38,7 +40,7 @@ export interface NormalizedPost {
   caption: string;
   thumbnailUrl?: string;
   mediaUrl?: string;
-  takenAt: number; // unix seconds
+  takenAt: number;
   likeCount: number;
   commentCount: number;
   shareCount?: number;
@@ -61,21 +63,23 @@ export interface NormalizedAd {
   linkUrl?: string;
   linkDescription?: string;
   thumbnailUrl?: string;
-  thumbnailUrls: string[]; // multiple thumbnails per carousel
+  thumbnailUrls: string[];
   videoUrl?: string;
   raw: any;
 }
 
 // ============================================================
-// INSTAGRAM NORMALIZERS
+// INSTAGRAM
 // ============================================================
 
-export function normalizeInstagramProfile(raw: SCInstagramProfile): NormalizedProfile {
-  const user = raw.user || (raw as any);
-  const edges = user.edge_owner_to_timeline_media?.edges || [];
+export function normalizeInstagramProfile(raw: any): NormalizedProfile {
+  const user: any = raw?.user || raw || {};
+  const edges: any[] = user.edge_owner_to_timeline_media?.edges || [];
 
-  const user: any = raw.user || (raw as any);
-    handle: user.username,
+  return {
+    platform: 'instagram',
+    id: String(user.pk || user.pk_id || user.id || user.username || ''),
+    handle: user.username || '',
     fullName: user.full_name || '',
     biography: user.biography || user.biography_with_entities?.raw_text || '',
     profilePicUrl: user.profile_pic_url,
@@ -97,24 +101,24 @@ export function normalizeInstagramProfile(raw: SCInstagramProfile): NormalizedPr
   };
 }
 
-export function normalizeInstagramPosts(raw: SCInstagramProfile): NormalizedPost[] {
-  const edges = raw.user?.edge_owner_to_timeline_media?.edges || [];
+export function normalizeInstagramPosts(raw: any): NormalizedPost[] {
+  const edges: any[] = raw?.user?.edge_owner_to_timeline_media?.edges || [];
 
-  return edges.map((e) => {
-    const node = e.node;
+  return edges.map((e: any) => {
+    const node = e.node || {};
     const caption = node.edge_media_to_caption?.edges?.[0]?.node?.text || '';
     const isVideo = node.is_video || !!node.video_url;
     const isReel = node.product_type === 'clips';
 
     return {
-      id: node.id,
+      id: String(node.id || ''),
       shortcode: node.shortcode,
       url: `https://www.instagram.com/p/${node.shortcode}/`,
       type: isReel ? 'reel' : isVideo ? 'video' : node.__typename === 'GraphSidecar' ? 'carousel' : 'photo',
       caption,
       thumbnailUrl: node.thumbnail_src || node.display_url,
       mediaUrl: node.video_url || node.display_url,
-      takenAt: node.taken_at_timestamp,
+      takenAt: node.taken_at_timestamp || 0,
       likeCount: node.edge_liked_by?.count ?? node.edge_media_preview_like?.count ?? 0,
       commentCount: node.edge_media_to_comment?.count ?? 0,
       videoViewCount: node.video_view_count,
@@ -123,11 +127,11 @@ export function normalizeInstagramPosts(raw: SCInstagramProfile): NormalizedPost
 }
 
 // ============================================================
-// FACEBOOK NORMALIZERS
+// FACEBOOK
 // ============================================================
 
 export function normalizeFacebookProfile(raw: any): NormalizedProfile {
-  const p = raw?.data || raw?.profile || raw;
+  const p: any = raw?.data || raw?.profile || raw || {};
 
   return {
     platform: 'facebook',
@@ -150,8 +154,9 @@ export function normalizeFacebookProfile(raw: any): NormalizedProfile {
   };
 }
 
-export function normalizeFacebookPosts(raw: any[]): NormalizedPost[] {
-  return (raw || []).map((p) => {
+export function normalizeFacebookPosts(raw: any): NormalizedPost[] {
+  const arr: any[] = Array.isArray(raw) ? raw : [];
+  return arr.map((p: any) => {
     const text = p.text || p.message || p.content || '';
     const thumb =
       p.thumbnail ||
@@ -172,7 +177,7 @@ export function normalizeFacebookPosts(raw: any[]): NormalizedPost[] {
     else if (p.timestamp) takenAt = typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime() / 1000;
 
     return {
-      id: String(p.id || p.postId || p.post_id || p.url),
+      id: String(p.id || p.postId || p.post_id || p.url || ''),
       url: p.url || p.postUrl,
       type,
       caption: text,
@@ -187,50 +192,32 @@ export function normalizeFacebookPosts(raw: any[]): NormalizedPost[] {
 }
 
 // ============================================================
-// FACEBOOK ADS NORMALIZERS (IMPORTANTE: questa è la parte critica)
+// FACEBOOK ADS
 // ============================================================
 
-/**
- * Normalizza una singola ad dall'Ad Library.
- * La struttura dati ScrapeCreators può avere le immagini in:
- * - snapshot.images[].resized_image_url / original_image_url
- * - snapshot.videos[].video_preview_image_url
- * - snapshot.cards[].resized_image_url (per carousel)
- */
 export function normalizeFacebookAd(raw: any): NormalizedAd {
-  const snapshot = raw.snapshot || raw.creative || {};
-
-  // Raccolta di TUTTE le possibili immagini
+  const snapshot: any = raw?.snapshot || raw?.creative || {};
   const thumbnailUrls: string[] = [];
 
-  // 1) Video preview images
   for (const v of snapshot.videos || []) {
     if (v.video_preview_image_url) thumbnailUrls.push(v.video_preview_image_url);
   }
-
-  // 2) Images array (foto statiche)
   for (const img of snapshot.images || []) {
     const url = img.resized_image_url || img.original_image_url || img.url;
     if (url) thumbnailUrls.push(url);
   }
-
-  // 3) Cards (carousel)
   for (const card of snapshot.cards || []) {
     const url = card.resized_image_url || card.original_image_url;
     if (url) thumbnailUrls.push(url);
   }
-
-  // 4) Fallback a campi top-level
   if (thumbnailUrls.length === 0) {
-    const fallback = raw.image || raw.thumbnail || raw.imageUrl || raw.preview;
+    const fallback = raw?.image || raw?.thumbnail || raw?.imageUrl || raw?.preview;
     if (fallback) thumbnailUrls.push(fallback);
   }
 
-  // Timestamps: ScrapeCreators li può dare in Unix seconds, Unix ms o string ISO
   const parseDate = (v: any): Date | undefined => {
     if (!v) return undefined;
     if (typeof v === 'number') {
-      // Euristica: se > 10^12 sono ms, altrimenti secondi
       return new Date(v > 1e12 ? v : v * 1000);
     }
     if (typeof v === 'string') {
@@ -240,29 +227,27 @@ export function normalizeFacebookAd(raw: any): NormalizedAd {
     return undefined;
   };
 
-  const format = (snapshot.display_format || raw.display_format || 'UNKNOWN').toUpperCase();
+  const format = (snapshot.display_format || raw?.display_format || 'UNKNOWN').toUpperCase();
   const mappedFormat: NormalizedAd['format'] =
     format === 'VIDEO' || format === 'IMAGE' || format === 'CAROUSEL' || format === 'DCO'
       ? format
       : 'UNKNOWN';
 
-  // Body: può essere stringa o oggetto { text } o markup HTML
   let bodyText: string | undefined;
   if (typeof snapshot.body === 'string') bodyText = snapshot.body;
   else if (snapshot.body?.text) bodyText = snapshot.body.text;
   else if (snapshot.body?.markup?.__html) {
-    // strip HTML
     bodyText = snapshot.body.markup.__html.replace(/<[^>]*>/g, '').trim();
   }
 
   return {
-    id: String(raw.adArchiveID || raw.ad_archive_id || raw.adID || raw.id || ''),
-    pageId: String(raw.pageID || raw.page_id || ''),
-    pageName: raw.pageName || raw.page_name || '',
-    isActive: raw.isActive ?? raw.is_active ?? (raw.endDate == null && raw.end_date == null),
-    startDate: parseDate(raw.startDate || raw.start_date),
-    endDate: parseDate(raw.endDate || raw.end_date) || null,
-    platforms: raw.publisherPlatforms || raw.publisher_platforms || raw.publisher_platform || [],
+    id: String(raw?.adArchiveID || raw?.ad_archive_id || raw?.adID || raw?.id || ''),
+    pageId: String(raw?.pageID || raw?.page_id || ''),
+    pageName: raw?.pageName || raw?.page_name || '',
+    isActive: raw?.isActive ?? raw?.is_active ?? (raw?.endDate == null && raw?.end_date == null),
+    startDate: parseDate(raw?.startDate || raw?.start_date),
+    endDate: parseDate(raw?.endDate || raw?.end_date) || null,
+    platforms: raw?.publisherPlatforms || raw?.publisher_platforms || raw?.publisher_platform || [],
     format: mappedFormat,
     title: snapshot.title,
     bodyText,
@@ -276,16 +261,17 @@ export function normalizeFacebookAd(raw: any): NormalizedAd {
   };
 }
 
-export function normalizeFacebookAds(raw: any[]): NormalizedAd[] {
-  return (raw || []).map(normalizeFacebookAd);
+export function normalizeFacebookAds(raw: any): NormalizedAd[] {
+  const arr: any[] = Array.isArray(raw) ? raw : [];
+  return arr.map(normalizeFacebookAd);
 }
 
 // ============================================================
-// TIKTOK / YOUTUBE / LINKEDIN / TWITTER (minimalista)
+// TIKTOK / YOUTUBE / LINKEDIN / TWITTER
 // ============================================================
 
 export function normalizeTikTokProfile(raw: any): NormalizedProfile {
-  const u = raw?.user || raw?.data || raw;
+  const u: any = raw?.user || raw?.data || raw || {};
   return {
     platform: 'tiktok',
     id: String(u.id || u.sec_uid || u.uniqueId || u.username || ''),
@@ -308,7 +294,7 @@ export function normalizeTikTokProfile(raw: any): NormalizedProfile {
 }
 
 export function normalizeYouTubeChannel(raw: any): NormalizedProfile {
-  const c = raw?.channel || raw?.data || raw;
+  const c: any = raw?.channel || raw?.data || raw || {};
   return {
     platform: 'youtube',
     id: String(c.channelId || c.id || c.handle || ''),
@@ -331,7 +317,7 @@ export function normalizeYouTubeChannel(raw: any): NormalizedProfile {
 }
 
 export function normalizeLinkedInProfile(raw: any): NormalizedProfile {
-  const p = raw?.profile || raw?.company || raw?.data || raw;
+  const p: any = raw?.profile || raw?.company || raw?.data || raw || {};
   return {
     platform: 'linkedin',
     id: String(p.id || p.publicIdentifier || p.universalName || ''),
@@ -354,7 +340,7 @@ export function normalizeLinkedInProfile(raw: any): NormalizedProfile {
 }
 
 export function normalizeTwitterProfile(raw: any): NormalizedProfile {
-  const u = raw?.user || raw?.data || raw;
+  const u: any = raw?.user || raw?.data || raw || {};
   return {
     platform: 'twitter',
     id: String(u.id || u.id_str || u.screen_name || u.username || ''),
