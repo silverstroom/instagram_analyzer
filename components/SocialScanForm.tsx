@@ -4,19 +4,21 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { Platform } from '@/lib/scrapecreators/client';
 
-const SOCIALS: Array<{
+interface SocialMeta {
   id: Platform;
   name: string;
   color: string;
   hint: string;
   default: boolean;
   icon: React.ReactNode;
-}> = [
+}
+
+const SOCIALS: SocialMeta[] = [
   {
     id: 'instagram',
     name: 'Instagram',
     color: '#E1306C',
-    hint: 'es. @edunews_24',
+    hint: 'username IG, es. edunews_24',
     default: true,
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="w-5 h-5">
@@ -30,7 +32,7 @@ const SOCIALS: Array<{
     id: 'facebook',
     name: 'Facebook',
     color: '#1877F2',
-    hint: 'URL pagina FB o nome pagina',
+    hint: 'URL pagina FB, es. https://www.facebook.com/EduNews24.it',
     default: true,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
@@ -42,7 +44,7 @@ const SOCIALS: Array<{
     id: 'tiktok',
     name: 'TikTok',
     color: '#000',
-    hint: 'es. @username',
+    hint: 'handle TikTok, es. @username',
     default: false,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
@@ -54,7 +56,7 @@ const SOCIALS: Array<{
     id: 'youtube',
     name: 'YouTube',
     color: '#FF0000',
-    hint: 'es. @channelhandle',
+    hint: 'handle canale, es. @channelname',
     default: false,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
@@ -66,7 +68,7 @@ const SOCIALS: Array<{
     id: 'linkedin',
     name: 'LinkedIn',
     color: '#0077B5',
-    hint: 'URL company o profilo',
+    hint: 'URL company LinkedIn, es. linkedin.com/company/...',
     default: false,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
@@ -78,16 +80,21 @@ const SOCIALS: Array<{
     id: 'twitter',
     name: 'Twitter / X',
     color: '#000',
-    hint: 'es. @username',
+    hint: 'handle X, es. @username',
     default: false,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-        <path d="M13.6 10.8L20.9 2.4h-1.7l-6.4 7.4L7.7 2.4H1.8l7.7 11.2-7.7 9h1.7l6.8-7.9 5.4 7.9h5.9L13.6 10.8zm-2.4 2.8l-.8-1.1L4.2 3.7h2.7l5 7.2.8 1.1 6.6 9.4h-2.7l-5.4-7.8z" />
+        <path d="M13.6 10.8L20.9 2.4h-1.7l-6.4 7.4L7.7 2.4H1.8l7.7 11.2-7.7 9h1.7l6.8-7.9 5.4 7.9h5.9L13.6 10.8z" />
       </svg>
     ),
   },
 ];
 
+/**
+ * Form home con UN input per ogni social selezionato.
+ * Gli handle tra social sono diversi (es. edunews_24 su IG, EduNews24.it su FB),
+ * quindi servono campi separati.
+ */
 export function SocialScanForm() {
   const router = useRouter();
   const [selected, setSelected] = useState<Record<Platform, boolean>>(() => {
@@ -95,28 +102,44 @@ export function SocialScanForm() {
     SOCIALS.forEach((s) => (init[s.id] = s.default));
     return init;
   });
-  const [username, setUsername] = useState('');
+  const [inputs, setInputs] = useState<Record<Platform, string>>({
+    instagram: '',
+    facebook: '',
+    tiktok: '',
+    youtube: '',
+    linkedin: '',
+    twitter: '',
+  });
   const [submitting, setSubmitting] = useState(false);
 
   const activeSocials = SOCIALS.filter((s) => selected[s.id]);
-  const primary = activeSocials[0]; // il primo spuntato diventa quello iniziale
+  const filledActive = activeSocials.filter((s) => inputs[s.id].trim().length > 0);
+  const primary = filledActive[0];
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!username.trim() || !primary) return;
+    if (!primary) return;
     setSubmitting(true);
 
-    // Passiamo i social selezionati come query per permettere al dashboard di inizializzare le tab
-    const platforms = activeSocials.map((s) => s.id).join(',');
-    const clean = username.trim().replace('@', '').toLowerCase();
-    router.push(`/dashboard/${primary.id}/${encodeURIComponent(clean)}?platforms=${platforms}`);
+    const platforms = filledActive.map((s) => s.id).join(',');
+
+    // Passa gli handle di tutti i social selezionati via query string
+    const handlesParam = filledActive
+      .map((s) => `${s.id}:${encodeURIComponent(inputs[s.id].trim())}`)
+      .join(',');
+
+    const primaryHandle = cleanHandle(inputs[primary.id], primary.id);
+    router.push(
+      `/dashboard/${primary.id}/${encodeURIComponent(primaryHandle)}?platforms=${platforms}&handles=${encodeURIComponent(handlesParam)}`
+    );
   }
 
   return (
     <div className="max-w-2xl mx-auto">
-      {/* Social picker */}
-      <div className="mb-6">
-        <div className="text-sm text-ink-700 mb-3 font-medium">Su quali social vuoi fare lo scan?</div>
+      <div className="mb-5">
+        <div className="text-sm text-ink-700 mb-3 font-medium">
+          Su quali social vuoi fare lo scan?
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {SOCIALS.map((s) => {
             const isActive = selected[s.id];
@@ -124,9 +147,7 @@ export function SocialScanForm() {
               <label
                 key={s.id}
                 className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                  isActive
-                    ? 'border-ink-900 bg-ink-50'
-                    : 'border-ink-200 hover:border-ink-300'
+                  isActive ? 'border-ink-900 bg-ink-50' : 'border-ink-200 hover:border-ink-300'
                 }`}
               >
                 <input
@@ -135,7 +156,7 @@ export function SocialScanForm() {
                   onChange={(e) => setSelected({ ...selected, [s.id]: e.target.checked })}
                   className="w-4 h-4 rounded accent-ink-900"
                 />
-                <span style={{ color: isActive ? s.color : '#737369' }}>{s.icon}</span>
+                <span style={{ color: isActive ? s.color : '#6b6b61' }}>{s.icon}</span>
                 <span className={`text-sm font-medium ${isActive ? 'text-ink-900' : 'text-ink-700'}`}>
                   {s.name}
                 </span>
@@ -145,34 +166,80 @@ export function SocialScanForm() {
         </div>
       </div>
 
-      {/* Input + submit */}
+      {/* Input dedicato per ogni social selezionato */}
       <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="relative">
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder={primary?.hint || 'Inserisci username/URL del profilo'}
-            className="w-full px-5 py-4 pr-32 text-base md:text-lg rounded-full border-2 border-ink-200 focus:border-ink-900 focus:outline-none bg-white text-ink-900 placeholder:text-ink-500"
-            disabled={submitting || !primary}
-          />
-          <button
-            type="submit"
-            disabled={!username.trim() || !primary || submitting}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 px-5 py-2.5 bg-ink-900 text-white rounded-full text-sm md:text-base font-medium hover:bg-ink-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {submitting ? 'Attendi...' : 'Scansiona'}
-          </button>
+        <div className="space-y-2">
+          {activeSocials.map((s) => (
+            <div
+              key={s.id}
+              className="flex items-center gap-2 rounded-lg border border-ink-200 bg-white focus-within:border-ink-900 transition-colors"
+            >
+              <div
+                className="shrink-0 w-11 h-11 rounded-l-lg flex items-center justify-center border-r border-ink-200"
+                style={{ color: s.color }}
+              >
+                {s.icon}
+              </div>
+              <input
+                type="text"
+                value={inputs[s.id]}
+                onChange={(e) => setInputs({ ...inputs, [s.id]: e.target.value })}
+                placeholder={s.hint}
+                className="flex-1 py-2.5 pr-3 text-sm md:text-base bg-transparent outline-none text-ink-900 placeholder:text-ink-500 min-w-0"
+                disabled={submitting}
+              />
+            </div>
+          ))}
+          {activeSocials.length === 0 && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 p-3 rounded-lg">
+              Seleziona almeno un social per iniziare.
+            </p>
+          )}
         </div>
 
-        <p className="text-xs text-ink-600 text-center">
-          {activeSocials.length === 0 ? (
-            <span className="text-amber-700">Seleziona almeno un social per procedere.</span>
-          ) : (
-            <>Lo scan partirà da <strong>{primary?.name}</strong>. Gli altri social selezionati appariranno come tab nella dashboard.</>
-          )}
-        </p>
+        <button
+          type="submit"
+          disabled={!primary || submitting}
+          className="w-full px-6 py-3.5 bg-ink-900 text-white rounded-full text-base md:text-lg font-medium hover:bg-ink-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {submitting ? 'Analisi in corso...' : `Scansiona ${filledActive.length > 0 ? filledActive.length : ''} social`}
+        </button>
+
+        {filledActive.length > 0 && (
+          <p className="text-xs text-ink-600 text-center">
+            Partiremo da <strong>{primary?.name}</strong>. Gli altri social con dati compilati
+            diventeranno tab nella dashboard.
+          </p>
+        )}
       </form>
     </div>
   );
+}
+
+/**
+ * Ripulisce l'input dell'utente per generare un identificatore usabile nella URL.
+ * Per IG/TikTok/Twitter/YouTube: elimina @ e spazi.
+ * Per Facebook: se è URL completo lascia come è (URL-encoded), se è handle pulito
+ * lo usa direttamente.
+ * Per LinkedIn: accetta URL company.
+ */
+function cleanHandle(raw: string, platform: Platform): string {
+  const trimmed = raw.trim();
+
+  if (platform === 'facebook' || platform === 'linkedin') {
+    // Se è URL completo, estraggo l'ultimo segmento per URL-friendliness
+    try {
+      const u = new URL(trimmed);
+      const parts = u.pathname.split('/').filter(Boolean);
+      // Per FB l'handle è il primo segmento dopo il dominio
+      // Per LinkedIn può essere company/X o in/X, prendiamo l'ultimo segmento utile
+      const handle = parts[parts.length - 1] || parts[0] || '';
+      return handle;
+    } catch {
+      // Non è URL valido, usa come è
+      return trimmed.replace(/^@/, '');
+    }
+  }
+
+  return trimmed.replace(/^@/, '').toLowerCase();
 }

@@ -24,7 +24,7 @@ type Params = { platform: string; username: string };
 
 async function analyzeProfile(
   platform: string,
-  username: string
+  input: string
 ): Promise<{ profile: NormalizedProfile | null; posts: NormalizedPost[]; error?: string }> {
   const client = getScrapeCreatorsClient();
   if (!client.isConfigured()) {
@@ -34,7 +34,7 @@ async function analyzeProfile(
   try {
     switch (platform) {
       case 'instagram': {
-        const raw = await client.instagramProfile(username);
+        const raw = await client.instagramProfile(input);
         return {
           profile: normalizeInstagramProfile(raw),
           posts: normalizeInstagramPosts(raw),
@@ -42,10 +42,10 @@ async function analyzeProfile(
       }
 
       case 'facebook': {
-        // Per FB username potrebbe essere una URL o un nome
-        const url = username.startsWith('http')
-          ? username
-          : `https://www.facebook.com/${username}`;
+        // Accetta sia handle puro ('EduNews24.it') sia URL completa
+        const url = input.startsWith('http')
+          ? input
+          : `https://www.facebook.com/${input}`;
         const [profileRaw, postsRaw] = await Promise.all([
           client.facebookProfile(url),
           client.facebookPosts(url).catch(() => []),
@@ -57,17 +57,15 @@ async function analyzeProfile(
       }
 
       case 'tiktok': {
-        const raw = await client.tiktokProfile(username);
-        const videos = await client.tiktokProfileVideos(username).catch(() => null);
+        const raw = await client.tiktokProfile(input);
+        const videos = await client.tiktokProfileVideos(input).catch(() => null);
         const profile = normalizeTikTokProfile(raw);
-        // TikTok videos normalize
-        const posts: NormalizedPost[] = ((videos?.videos || videos?.itemList || []) as any[]).map((v) => ({
+        const posts: NormalizedPost[] = ((videos?.videos || videos?.itemList || []) as any[]).map((v: any) => ({
           id: String(v.id || v.aweme_id),
           url: v.shareUrl || v.url,
-          type: 'video',
+          type: 'video' as const,
           caption: v.desc || v.title || '',
           thumbnailUrl: v.video?.cover || v.cover,
-          mediaUrl: v.video?.playAddr || v.play_url,
           takenAt: v.createTime || v.create_time || 0,
           likeCount: v.stats?.diggCount || v.digg_count || 0,
           commentCount: v.stats?.commentCount || v.comment_count || 0,
@@ -78,13 +76,13 @@ async function analyzeProfile(
       }
 
       case 'youtube': {
-        const raw = await client.youtubeChannel(username);
-        const videos = await client.youtubeChannelVideos(username).catch(() => null);
+        const raw = await client.youtubeChannel(input);
+        const videos = await client.youtubeChannelVideos(input).catch(() => null);
         const profile = normalizeYouTubeChannel(raw);
-        const posts: NormalizedPost[] = ((videos?.videos || []) as any[]).map((v) => ({
+        const posts: NormalizedPost[] = ((videos?.videos || []) as any[]).map((v: any) => ({
           id: String(v.videoId || v.id),
           url: `https://www.youtube.com/watch?v=${v.videoId || v.id}`,
-          type: 'video',
+          type: 'video' as const,
           caption: v.title || '',
           thumbnailUrl: v.thumbnailUrl,
           takenAt: v.publishedAt ? new Date(v.publishedAt).getTime() / 1000 : 0,
@@ -96,21 +94,21 @@ async function analyzeProfile(
       }
 
       case 'linkedin': {
-        const url = username.startsWith('http')
-          ? username
-          : `https://www.linkedin.com/company/${username}`;
+        const url = input.startsWith('http')
+          ? input
+          : `https://www.linkedin.com/company/${input}`;
         const raw = await client.linkedinCompany(url).catch(() => client.linkedinProfile(url));
         return { profile: normalizeLinkedInProfile(raw), posts: [] };
       }
 
       case 'twitter': {
-        const raw = await client.twitterProfile(username);
-        const tweets = await client.twitterUserTweets(username).catch(() => null);
+        const raw = await client.twitterProfile(input);
+        const tweets = await client.twitterUserTweets(input).catch(() => null);
         const profile = normalizeTwitterProfile(raw);
-        const posts: NormalizedPost[] = ((tweets?.tweets || tweets?.data || []) as any[]).map((t) => ({
+        const posts: NormalizedPost[] = ((tweets?.tweets || tweets?.data || []) as any[]).map((t: any) => ({
           id: String(t.id || t.id_str),
           url: `https://twitter.com/${profile.handle}/status/${t.id || t.id_str}`,
-          type: 'status',
+          type: 'status' as const,
           caption: t.text || t.full_text || '',
           takenAt: t.created_at ? new Date(t.created_at).getTime() / 1000 : 0,
           likeCount: t.favorite_count || t.likes || 0,
@@ -128,18 +126,40 @@ async function analyzeProfile(
   }
 }
 
+/**
+ * Parse il parametro handles dalla query.
+ * Formato: "instagram:edunews_24,facebook:EduNews24.it,tiktok:@foo"
+ */
+function parseHandlesParam(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  const out: Record<string, string> = {};
+  const decoded = decodeURIComponent(raw);
+  for (const pair of decoded.split(',')) {
+    const colonIdx = pair.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const plat = pair.slice(0, colonIdx).trim();
+    const val = pair.slice(colonIdx + 1).trim();
+    if (plat && val) out[plat] = val;
+  }
+  return out;
+}
+
 export default async function DashboardPage({
   params,
   searchParams,
 }: {
   params: Params;
-  searchParams: { platforms?: string };
+  searchParams: { platforms?: string; handles?: string };
 }) {
   const platform = params.platform.toLowerCase();
-  const username = decodeURIComponent(params.username).replace('@', '').trim().toLowerCase();
+  const urlUsername = decodeURIComponent(params.username);
   const selectedPlatforms = (searchParams.platforms || platform).split(',').filter(Boolean);
+  const handles = parseHandlesParam(searchParams.handles);
 
-  const { profile, posts, error } = await analyzeProfile(platform, username);
+  // Usa l'handle specifico per la platform se disponibile, altrimenti fallback all'URL param
+  const analysisInput = handles[platform] || urlUsername;
+
+  const { profile, posts, error } = await analyzeProfile(platform, analysisInput);
 
   if (error || !profile) {
     return (
@@ -152,26 +172,30 @@ export default async function DashboardPage({
             ← Torna alla home
           </Link>
           <h1 className="font-display text-3xl mb-4">Analisi non riuscita</h1>
-          <p className="text-ink-700">
-            Non è stato possibile analizzare <strong>@{username}</strong> su {platform}.
+          <p className="text-ink-700 mb-4">
+            Non è stato possibile analizzare <strong>{analysisInput}</strong> su {platform}.
           </p>
           <pre className="mt-4 p-4 bg-ink-100 rounded-md text-sm text-red-800 overflow-auto whitespace-pre-wrap">
             {error}
           </pre>
+          <p className="text-sm text-ink-700 mt-4">
+            Suggerimento: verifica di aver inserito l&apos;handle/URL corretto per{' '}
+            {platform}. Gli handle variano tra social (es. <code>@edunews_24</code> su
+            Instagram ma <code>facebook.com/EduNews24.it</code> su Facebook).
+          </p>
         </div>
       </main>
     );
   }
 
-  // Checklist ottimizzazione
   const checklist = evaluateProfileChecklist(profile, posts);
 
-  // Persistenza (best effort, non blocca l'analisi)
+  // Persistenza storico
   try {
     const supabase = getSupabaseAdmin();
     await supabase.from('analyses_cache').upsert(
       {
-        username: profile.handle,
+        username: profile.handle || analysisInput,
         platform,
         analyzed_at: new Date().toISOString(),
         profile_pic_url: profile.profilePicUrl,
@@ -199,7 +223,8 @@ export default async function DashboardPage({
       initialChecklist={checklist}
       platform={platform}
       selectedPlatforms={selectedPlatforms}
-      username={username}
+      handles={handles}
+      username={profile.handle || analysisInput}
     />
   );
 }

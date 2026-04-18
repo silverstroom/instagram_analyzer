@@ -22,6 +22,7 @@ interface Props {
   initialChecklist: OptimizationChecklist;
   platform: string;
   selectedPlatforms: string[];
+  handles: Record<string, string>; // NUOVO: map platform → handle specifico
   username: string;
 }
 
@@ -31,6 +32,7 @@ export function ProfileDashboardV5({
   initialChecklist,
   platform,
   selectedPlatforms,
+  handles,
   username,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Platform>(platform as Platform);
@@ -44,29 +46,36 @@ export function ProfileDashboardV5({
     },
   });
   const [loadingTab, setLoadingTab] = useState<string | null>(null);
+  const [tabErrors, setTabErrors] = useState<Record<string, string>>({});
 
   const currentData = perPlatformData[activeTab];
+  const currentError = tabErrors[activeTab];
 
   async function switchTab(tab: Platform) {
     setActiveTab(tab);
-    if (perPlatformData[tab]) return; // già caricato
+    if (perPlatformData[tab]) return;
 
     setLoadingTab(tab);
+    setTabErrors((prev) => ({ ...prev, [tab]: '' }));
     try {
-      const res = await fetch(`/api/analyze?platform=${tab}&username=${encodeURIComponent(username)}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPerPlatformData((prev) => ({ ...prev, [tab]: data }));
+      // Usa l'handle specifico per quel social, altrimenti fallback
+      const tabHandle = handles[tab] || username;
+      const res = await fetch(
+        `/api/analyze?platform=${tab}&username=${encodeURIComponent(tabHandle)}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Errore ${res.status}`);
       }
+      setPerPlatformData((prev) => ({ ...prev, [tab]: data }));
+    } catch (e: any) {
+      setTabErrors((prev) => ({ ...prev, [tab]: e.message }));
     } finally {
       setLoadingTab(null);
     }
   }
 
-  // Aggrega hashtag da caption di tutti i post
-  const hashtagStats = currentData
-    ? aggregateHashtags(currentData.posts)
-    : [];
+  const hashtagStats = currentData ? aggregateHashtags(currentData.posts) : [];
 
   return (
     <main className="min-h-screen">
@@ -104,35 +113,38 @@ export function ProfileDashboardV5({
           </div>
         )}
 
-        {currentData && !loadingTab && (
+        {currentError && !loadingTab && (
+          <div className="my-6 p-5 rounded-xl border border-red-200 bg-red-50 text-red-900">
+            <div className="font-semibold mb-2">Errore caricando {activeTab}</div>
+            <div className="text-sm mb-3">{currentError}</div>
+            <div className="text-xs text-red-800">
+              Suggerimento: torna in <Link href="/" className="underline">home</Link> e
+              inserisci l&apos;handle/URL corretto per {activeTab}. Gli handle tra social sono
+              spesso diversi (es. <code>@edunews_24</code> su Instagram ma{' '}
+              <code>facebook.com/EduNews24.it</code> su Facebook).
+            </div>
+          </div>
+        )}
+
+        {currentData && !loadingTab && !currentError && (
           <div className="space-y-6 md:space-y-8 animate-fade-in">
             <ProfileHeader profile={currentData.profile} posts={currentData.posts} />
-
-            {/* Checklist ottimizzazione: elemento principale */}
             <OptimizationChecklistCard checklist={currentData.checklist} />
-
-            {/* Mix contenuti in evidenza */}
             {currentData.posts.length > 0 && (
               <ContentMixHero posts={currentData.posts} profile={currentData.profile} />
             )}
-
-            {/* Strategy & actions */}
-            <StrategyActionsCard checklist={currentData.checklist} profile={currentData.profile} posts={currentData.posts} />
-
-            {/* Top posts */}
+            <StrategyActionsCard
+              checklist={currentData.checklist}
+              profile={currentData.profile}
+              posts={currentData.posts}
+            />
             {currentData.posts.length > 0 && (
               <TopPostsGrid posts={currentData.posts} profile={currentData.profile} />
             )}
-
-            {/* Heatmap */}
             {currentData.posts.filter((p) => p.takenAt > 0).length >= 3 && (
               <PostingHeatmap posts={currentData.posts} />
             )}
-
-            {/* Hashtag cloud */}
             <TagCloud hashtags={hashtagStats} />
-
-            {/* Facebook-only: Ad Library */}
             {activeTab === 'facebook' && (
               <FacebookAdsPanel profile={currentData.profile} />
             )}
@@ -151,7 +163,6 @@ interface HashtagStat {
 
 function aggregateHashtags(posts: NormalizedPost[]): HashtagStat[] {
   const map = new Map<string, { uses: number; totalEng: number }>();
-
   for (const p of posts) {
     const tags = extractHashtagsFromText(p.caption);
     const eng = p.likeCount + p.commentCount + (p.shareCount || 0);
@@ -162,7 +173,6 @@ function aggregateHashtags(posts: NormalizedPost[]): HashtagStat[] {
       map.set(t, cur);
     }
   }
-
   return Array.from(map.entries())
     .map(([tag, v]) => ({
       tag,
